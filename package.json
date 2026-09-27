@@ -1,0 +1,32 @@
+{
+  "name": "eee-review",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Review plans, specs and code on an Asus Eee Note with pen and paper feel, round-tripping with a coding agent over MCP",
+  "type": "module",
+  "bin": {
+    "eee-review": "src/cli.mjs"
+  },
+  "scripts": {
+    "hub": "node src/cli.mjs hub",
+    "mcp": "node src/cli.mjs mcp",
+    "test": "node --test test/*.test.mjs",
+    "format": "prettier --write src test web",
+    "native": "sh native/build.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "highlight.js": "^11.12.0",
+    "markdown-it": "^15.0.2",
+    "zod": "^3.25.0"
+  },
+  "optionalDependencies": {
+    "playwright-core": "1.58.2"
+  },
+  "devDependencies": {
+    "prettier": "^3.6.0"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+native/**/build/
+native/eeereview/eeereview
+native/inktest/inktest
+.DS_Store
