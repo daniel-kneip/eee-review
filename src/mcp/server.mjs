@@ -43,7 +43,7 @@ function repoOf(dir) {
   try {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' }).trim();
   } catch {
-    return dir;
+    return null;
   }
 }
 
@@ -94,12 +94,24 @@ export async function startMcp() {
         files: z.array(z.string()).default([]).describe('Pfade relativ zum Repository'),
         base: z.string().default('HEAD').describe('nur code: Vergleichsbasis'),
         head: z.string().optional().describe('nur code: Ziel-Commit; weglassen für das Arbeitsverzeichnis'),
-        repo: z.string().optional().describe('Repository; Standard ist das aktuelle Arbeitsverzeichnis'),
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            'Absoluter Pfad des Projekts; ohne Angabe das Git-Repository des Arbeitsverzeichnisses, falls es eines ist',
+          ),
       },
     },
     async ({ title, kind, files, base, head, repo }) => {
       await ensureHub();
-      const root = repoOf(path.resolve(repo ?? process.cwd()));
+      // Some clients start MCP servers outside the project (Kiro with a user-level config),
+      // so an unset repo only falls back to the working directory when that is a git repo.
+      const root = repo ? (repoOf(path.resolve(repo)) ?? path.resolve(repo)) : repoOf(process.cwd());
+      if (!root) {
+        throw new Error(
+          `Kein Repository gefunden (Arbeitsverzeichnis ${process.cwd()}). Gib repo als absoluten Pfad des Projekts an.`,
+        );
+      }
       const relative = files.map((f) => path.relative(root, path.resolve(root, f)));
       const { review } = await call('POST', '/api/agent/create', {
         title,

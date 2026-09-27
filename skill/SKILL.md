@@ -17,6 +17,8 @@ the marks back.
   `base` (default `HEAD`), new files included. With `base` and `head` it shows the change between
   two commits. Put files the user will need to understand the change in `files`.
 - Give it a short title. It is what the user sees in the tablet's inbox.
+- Pass `repo` as the project's absolute path unless you know the MCP server runs inside the
+  project. Kiro starts it elsewhere; without `repo` the call then fails and asks for it.
 
 ## Waiting
 
