@@ -175,11 +175,29 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
   const self = () => `http://127.0.0.1:${server.address().port}`;
 
   // A round's documents do not change, so their pages are rendered once and kept with it.
-  async function pages(id, index) {
+  // Only the current round can still be rendered.
+  async function pages(id, round, index) {
     const review = store.get(id);
-    const dir = store.roundDir(id, review.round, 'pages', String(index));
-    if (!fs.existsSync(path.join(dir, 'index.json'))) await renderer.render(`${self()}/r/${id}/render/${index}`, dir);
+    const dir = store.roundDir(id, round, 'pages', String(index));
+    if (!fs.existsSync(path.join(dir, 'index.json')) && round === review.round)
+      await renderer.render(`${self()}/r/${id}/render/${index}`, dir);
     return dir;
+  }
+
+  // The tablet queues what it sends while offline and sends it again when unsure it arrived,
+  // so a post for a round that has moved on is refused, and a repeated one changes nothing.
+  function stale(id, body) {
+    return body.round !== undefined && body.round !== store.get(id).round;
+  }
+  function repeated(id, action, body) {
+    const round = store.get(id).round;
+    if (action === 'submit') {
+      const feedback = store.feedback(id, round);
+      return !!feedback && JSON.stringify(feedback.marks) === JSON.stringify(locate(id, body.marks ?? []));
+    }
+    if (action !== 'request') return false;
+    const mark = JSON.stringify(locate(id, [body.mark])[0]);
+    return store.requests(id, round).some((r) => JSON.stringify(r.mark) === mark);
   }
 
   // The native app sends ink alone; the rows it means come from where they sit on its pages.
@@ -204,7 +222,19 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       if (req.method === 'GET' && p === '/') return send(req, res, inboxPage(store));
       if (req.method === 'GET' && p === '/api/inbox') {
         const open = store.list().filter((r) => r.status !== 'closed');
-        return json(req, res, open.map((r) => ({ id: r.id, title: r.title, kind: r.kind, round: r.round, status: r.status, label: STATUS[r.status] ?? r.status })));
+        return json(
+          req,
+          res,
+          open.map((r) => ({
+            id: r.id,
+            title: r.title,
+            kind: r.kind,
+            round: r.round,
+            docs: store.docs(r.id, r.round).length,
+            status: r.status,
+            label: STATUS[r.status] ?? r.status,
+          })),
+        );
       }
       if (req.method === 'GET' && (m = p.match(/^\/web\/([\w.-]+\.(js|css))$/))) {
         const file = path.join(root, 'web', m[1]);
@@ -228,9 +258,9 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/render\/(\d+)$/))) {
         return send(req, res, renderPage(store, store.get(m[1]), Number(m[2])));
       }
-      if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/pages\/(\d+)\/(index\.json|\d+\.png)$/))) {
-        const file = path.join(await pages(m[1], Number(m[2])), m[3]);
-        if (fs.existsSync(file)) return send(req, res, fs.readFileSync(file), m[3].endsWith('.png') ? 'image/png' : 'application/json');
+      if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/(\d+)\/pages\/(\d+)\/(index\.json|\d+\.png)$/))) {
+        const file = path.join(await pages(m[1], Number(m[2]), Number(m[3])), m[4]);
+        if (fs.existsSync(file)) return send(req, res, fs.readFileSync(file), m[4].endsWith('.png') ? 'image/png' : 'application/json');
       }
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/fig\/([0-9a-f]+\.png)$/))) {
         return send(req, res, fs.readFileSync(store.dir(m[1], 'figures', m[2])), 'image/png');
@@ -241,6 +271,8 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       }
       if (req.method === 'POST' && (m = p.match(/^\/api\/r\/([0-9a-f]{8})\/(draft|submit|request)$/))) {
         const body = await readBody(req);
+        if (stale(m[1], body)) return json(req, res, { error: 'the review has moved on to another round' }, 409);
+        if (repeated(m[1], m[2], body)) return json(req, res, { ok: true });
         if (m[2] === 'draft') store.saveDraft(m[1], locate(m[1], body.marks ?? []));
         if (m[2] === 'submit') store.submit(m[1], locate(m[1], body.marks ?? []));
         if (m[2] === 'request') store.request(m[1], locate(m[1], [body.mark])[0]);

@@ -1,5 +1,6 @@
 // eee-review on the Eee Note: the inbox and the reviews drawn natively from the hub's
-// pre-rendered pages, with the pen read straight from the Wacom.
+// pre-rendered pages, with the pen read straight from the Wacom. The reviews are kept on the
+// tablet too (mirror.h), so they can be reviewed without the hub.
 //
 //   ./eeereview [hub url ...]
 //
@@ -13,6 +14,7 @@
 
 #include "../common/pen.h"
 #include "inbox.h"
+#include "mirror.h"
 #include "native.h"
 
 // eeeserver starts the app and shows a loading dialog until the app reports App/showed to the
@@ -59,7 +61,8 @@ private slots:
 class Shell : public QObject {
     Q_OBJECT
 public:
-    Shell(const QStringList &urls, const QRect &geometry) : inbox(urls), review(0), area(geometry) {
+    Shell(const QStringList &urls, const QRect &geometry)
+        : mirror(urls, "/eTablet/eee-review/cache"), inbox(&mirror), review(0), area(geometry) {
         inbox.setWindowFlags(Qt::FramelessWindowHint);
         inbox.setGeometry(area);
         connect(&inbox, SIGNAL(open(QString)), this, SLOT(openReview(QString)));
@@ -70,14 +73,15 @@ public:
         connect(pen, SIGNAL(burstDone()), this, SLOT(penBurst()));
         inbox.show();
         inbox.setFocus();
-        inbox.start();
+        mirror.start();
     }
+    void drain() { mirror.drain(3000); }
 
 private slots:
     void openReview(const QString &id) {
         if (review) return;
         fprintf(stderr, "open review %s\n", qPrintable(id));
-        review = new native::ReviewWidget(inbox.hubUrl(), id);
+        review = new native::ReviewWidget(&mirror, id);
         review->setWindowFlags(Qt::FramelessWindowHint);
         review->setGeometry(area);
         connect(review, SIGNAL(closed()), this, SLOT(closeReview()));
@@ -90,7 +94,7 @@ private slots:
         review = 0;
         inbox.show();
         inbox.setFocus();
-        inbox.refresh();
+        mirror.refresh();
     }
     void penDown(int x, int y, int, qint64) {
         QPoint p = calibration.toScreen(x, y);
@@ -112,6 +116,7 @@ private slots:
 
 private:
     Calibration calibration;
+    native::Mirror mirror;
     native::InboxWidget inbox;
     native::ReviewWidget *review;
     QRect area;
@@ -144,7 +149,9 @@ int main(int argc, char **argv) {
     Shell shell(urls, QRect(screen.x(), screen.y() + top, screen.width(), screen.height() - top));
     LauncherLink launcher(&app);
     launcher.showed();
-    return app.exec();
+    int code = app.exec();
+    shell.drain();
+    return code;
 }
 
 #include "main.moc"

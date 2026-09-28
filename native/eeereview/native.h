@@ -2,7 +2,8 @@
 // strips (src/render/pages.mjs), so paging and scrolling only copy pixels. It behaves like
 // web/review.js, which stays the reference: a stroke on the document starts a mark and opens
 // its note beneath, strokes while a note is open add to that mark, a tap opens a mark's note.
-// Marks go to the hub with their ink alone; the hub works out the rows they mean.
+// Marks go to the hub with their ink alone; the hub works out the rows they mean. Everything
+// goes through the Mirror, so a review on the tablet opens and saves without the hub.
 //
 // The pen arrives from the app's PenReader in screen coordinates through penDown/penMoved/
 // penUp; tslib's mouse echo of the same pen is ignored.
@@ -11,10 +12,9 @@
 #define EEE_NATIVE_H
 
 #include <QtGui>
-#include <QtNetwork>
-#include <QtScript>
 
 #include "baker.h"
+#include "mirror.h"
 
 namespace native {
 
@@ -104,32 +104,6 @@ inline QString buttonName(int key) {
     }
 }
 
-// Qt 4.6's QScriptValue::toVariant leaves objects as script objects, so values are walked here.
-inline QVariant fromScript(const QScriptValue &value) {
-    if (value.isArray()) {
-        QVariantList list;
-        int length = value.property("length").toInt32();
-        for (int i = 0; i < length; ++i) list << fromScript(value.property(i));
-        return list;
-    }
-    if (value.isObject()) {
-        QVariantMap map;
-        QScriptValueIterator it(value);
-        while (it.hasNext()) {
-            it.next();
-            map.insert(it.name(), fromScript(it.value()));
-        }
-        return map;
-    }
-    if (value.isNull() || value.isUndefined()) return QVariant();
-    return value.toVariant();
-}
-
-inline QVariant parseJson(const QByteArray &data) {
-    QScriptEngine engine;
-    return fromScript(engine.evaluate("(" + QString::fromUtf8(data) + ")"));
-}
-
 inline QString jsonString(const QString &s) {
     QString out = "\"";
     for (int i = 0; i < s.size(); ++i) {
@@ -212,12 +186,13 @@ inline bool strokeHit(const QPolygon &pts, const QPoint &p) {
 class ReviewWidget : public QWidget {
     Q_OBJECT
 public:
-    ReviewWidget(const QString &hub, const QString &id)
-        : hub(hub), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
+    ReviewWidget(Mirror *mirror, const QString &id)
+        : mirror(mirror), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
           drawerOpen(false), drawerScroll(0), drawerHeight(0), jumpDoc(-1), jumpLine(0) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
-        connect(&net, SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
+        connect(mirror, SIGNAL(got(QString, QByteArray, bool)), this, SLOT(got(QString, QByteArray, bool)));
+        connect(mirror, SIGNAL(sent(QString, QString)), this, SLOT(sent(QString, QString)));
         saveTimer.setSingleShot(true);
         connect(&saveTimer, SIGNAL(timeout()), this, SLOT(save()));
         connect(&pulse, SIGNAL(timeout()), this, SLOT(beat()));
@@ -226,7 +201,7 @@ public:
         baker = new Baker(this);
         connect(baker, SIGNAL(baked()), this, SLOT(applyBaked()));
         baker->start();
-        request(QString("api/r/%1").arg(reviewId), "review");
+        mirror->get(reviewId + "/review.json");
         message = QString::fromUtf8("Lade \xe2\x80\xa6");
     }
 
@@ -342,39 +317,34 @@ protected:
     void resizeEvent(QResizeEvent *) { layoutChanged(); }
 
 private slots:
-    void fetched(QNetworkReply *reply) {
-        reply->deleteLater();
-        QString what = reply->property("what").toString();
-        if (what == "save-now" && !afterSave.isEmpty()) {
-            QByteArray method = afterSave;
-            afterSave.clear();
-            QMetaObject::invokeMethod(this, method.constData(), Qt::QueuedConnection);
-        }
-        if (reply->error() != QNetworkReply::NoError) {
-            fprintf(stderr, "native: %s failed: %s\n", qPrintable(what), qPrintable(reply->errorString()));
-            if (what == "submit") status("Senden fehlgeschlagen");
-            else if (what == "ask") status("Frage nicht gesendet");
-            else if (what.startsWith("save")) status("Speichern fehlgeschlagen");
+    void got(const QString &key, const QByteArray &data, bool ok) {
+        QStringList parts = key.split('/');
+        if (parts[0] != reviewId) return;
+        if (parts.size() == 2) {
+            if (ok) loadReview(parseJson(data).toMap());
+            else {
+                message = QString::fromUtf8("Nicht auf dem Tablet â dafÃ¼r muss der Hub erreichbar sein");
+                update();
+            }
             return;
         }
-        QByteArray data = reply->readAll();
-        if (what == "review") loadReview(parseJson(data).toMap());
-        else if (what.startsWith("index:")) loadIndex(what.mid(6).toInt(), parseJson(data).toMap());
-        else if (what.startsWith("strip:")) {
-            QStringList parts = what.mid(6).split(":");
-            loadStrip(parts[0].toInt(), parts[1].toInt(), data);
-        } else if (what == "submit") emit closed();
-        else if (what == "ask") {
-            if (asking) { asking->asked = true; scheduleSave(); }
-            status("Frage an den Agenten gesendet");
-        }
+        int index = parts[2].toInt();
+        if (parts[1].toInt() != round || index >= docs.size()) return;
+        if (!ok) status(QString::fromUtf8("Seiten fehlen â nicht auf dem Tablet"));
+        if (parts[3] == "index.json") {
+            if (ok) loadIndex(index, parseJson(data).toMap());
+        } else if (ok) loadStrip(index, parts[3].section('.', 0, 0).toInt(), data);
+        else requestStrips(index);
+    }
+    void sent(const QString &id, const QString &action) {
+        if (id == reviewId && action == "request") status("Frage an den Agenten gesendet");
     }
     // Logs whenever the GUI thread went too long without getting round to its timers.
     void beat() {
         int ms = sinceBeat.restart();
         if (ms > 200) fprintf(stderr, "native: GUI stalled %d ms\n", ms);
     }
-    void save() { post("draft", "{\"marks\":" + marksJson() + "}", "save"); }
+    void save() { mirror->post(reviewId, "draft", marksBody()); }
     void applyBaked() {
         foreach (const Baked &b, baker->take()) {
             if (b.ms > 150) fprintf(stderr, "native: baked %s in %d ms\n", qPrintable(b.key), b.ms);
@@ -416,16 +386,7 @@ private:
     }
 
     // ── Loading ─────────────────────────────────────────────────────────
-    void request(const QString &path, const QString &what) {
-        QNetworkReply *reply = net.get(QNetworkRequest(QUrl(hub + path)));
-        reply->setProperty("what", what);
-    }
-    void post(const QString &action, const QByteArray &body, const QString &what) {
-        QNetworkRequest req(QUrl(QString("%1api/r/%2/%3").arg(hub, reviewId, action)));
-        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *reply = net.post(req, body);
-        reply->setProperty("what", what);
-    }
+    QString pageKey(int index, const QString &file) const { return QString("%1/%2/%3/%4").arg(reviewId).arg(round).arg(index).arg(file); }
 
     void loadReview(const QVariantMap &review) {
         title = review.value("title").toString();
@@ -445,7 +406,8 @@ private:
             foreach (const QVariant &line, m.value("rowNew").toList()) d.rowNew << line.toInt();
             docs << d;
         }
-        foreach (const QVariant &v, review.value("marks").toList()) {
+        QVariant saved = mirror->marks(reviewId, round);
+        foreach (const QVariant &v, (saved.isValid() ? saved : review.value("marks")).toList()) {
             QVariantMap m = v.toMap();
             MarkPtr mark(new Mark);
             mark->id = m.value("id").toString();
@@ -479,7 +441,7 @@ private:
         cur = index;
         openMark.clear();
         pane = "doc";
-        if (!docs[cur].loaded) request(QString("r/%1/pages/%2/index.json").arg(reviewId).arg(cur), QString("index:%1").arg(cur));
+        if (!docs[cur].loaded) mirror->get(pageKey(cur, "index.json"));
         layoutChanged();
     }
 
@@ -523,7 +485,7 @@ private:
                 if (!d.requested[n]) { next = n; break; }
         if (next < 0) return;
         d.requested[next] = true;
-        request(QString("r/%1/pages/%2/%3.png").arg(reviewId).arg(index).arg(next), QString("strip:%1:%2").arg(index).arg(next));
+        mirror->get(pageKey(index, QString("%1.png").arg(next)));
     }
 
     void loadStrip(int index, int n, const QByteArray &data) {
@@ -1485,34 +1447,40 @@ private:
         saveTimer.stop();
         save();
     }
-    // Saves any pending change, then calls the slot named method once the hub has answered.
+    // Saves any pending change, then calls the slot named method.
     void saveThen(const char *method) {
-        if (!saveTimer.isActive()) {
-            QMetaObject::invokeMethod(this, method, Qt::QueuedConnection);
-            return;
-        }
-        saveTimer.stop();
-        afterSave = method;
-        post("draft", "{\"marks\":" + marksJson() + "}", "save-now");
+        saveNow();
+        QMetaObject::invokeMethod(this, method, Qt::QueuedConnection);
     }
     void leave() { saveThen("closeView"); }
     void submit() {
         saveTimer.stop();
-        status(QString::fromUtf8("Sende \xe2\x80\xa6"));
-        post("submit", "{\"marks\":" + marksJson() + "}", "submit");
+        mirror->post(reviewId, "submit", marksBody());
+        emit closed();
     }
     void ask() {
         if (!openMark) return;
-        asking = openMark;
-        post("request", "{\"mark\":" + markJson(openMark) + "}", "ask");
+        QByteArray body = "{\"round\":";
+        appendInt(body, round);
+        body += ",\"mark\":" + markJson(openMark) + "}";
+        mirror->post(reviewId, "request", body);
+        openMark->asked = true;
+        scheduleSave();
+        status(mirror->online() ? QString::fromUtf8("Frage wird gesendet \xe2\x80\xa6")
+                                : QString::fromUtf8("Frage geht raus, sobald der Hub erreichbar ist"));
+    }
+    QByteArray marksBody() {
+        QByteArray body = "{\"round\":";
+        appendInt(body, round);
+        return body + ",\"marks\":" + marksJson() + "}";
     }
 
-    QString hub, reviewId, title, kind, message;
+    Mirror *mirror;
+    QString reviewId, title, kind, message;
     int round;
-    QNetworkAccessManager net;
     QList<Doc> docs;
     QList<MarkPtr> marks;
-    MarkPtr openMark, asking;
+    MarkPtr openMark;
     QList<Undo> undoStack;
     int cur, noteH;
     QString tool, pane, gesture;
@@ -1521,7 +1489,6 @@ private:
     bool pressed;
     int startY, startNoteH, noteExtent;
     QTimer saveTimer;
-    QByteArray afterSave;
     Baker *baker;
     QMap<QString, Tile> tiles;
     QMap<QString, QImage> arts;

@@ -1,13 +1,12 @@
-// The app's start: finds a hub, then lists the open reviews from /api/inbox and opens one
-// on a tap. The hub URLs are tried in order: the cable first (eeelink's local end), then
-// the Wi-Fi address deploy left behind.
+// The app's start: lists the open reviews as the Mirror knows them, whether a hub answers or
+// not, and opens one on a tap. Without a hub and without a copy there is nothing to show.
 
 #ifndef EEE_INBOX_H
 #define EEE_INBOX_H
 
 #include <QtGui>
-#include <QtNetwork>
 
+#include "mirror.h"
 #include "native.h"
 
 namespace native {
@@ -15,38 +14,10 @@ namespace native {
 class InboxWidget : public QWidget {
     Q_OBJECT
 public:
-    InboxWidget(const QStringList &urls) : urls(urls), tried(0), attempts(0), pending(0), pressed(false), scrollY(0) {
+    InboxWidget(Mirror *mirror) : mirror(mirror), pressed(false), scrollY(0) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
-        connect(&net, SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
-        probeTimeout.setSingleShot(true);
-        connect(&probeTimeout, SIGNAL(timeout()), this, SLOT(probeTimedOut()));
-        connect(&refreshTimer, SIGNAL(timeout()), this, SLOT(refresh()));
-        state = "probing";
-    }
-    QString hubUrl() const { return hub; }
-
-signals:
-    void open(const QString &id);
-
-public slots:
-    void start() {
-        state = "probing";
-        update();
-        if (tried >= urls.size()) {
-            fprintf(stderr, "no hub reachable\n");
-            state = "unreachable";
-            update();
-            return;
-        }
-        pending = net.get(QNetworkRequest(QUrl(urls[tried] + "api/ping")));
-        pending->setProperty("what", "ping");
-        probeTimeout.start(tried == 0 ? 2000 : 4000);
-    }
-    void refresh() {
-        if (hub.isEmpty()) return;
-        QNetworkReply *reply = net.get(QNetworkRequest(QUrl(hub + "api/inbox")));
-        reply->setProperty("what", "inbox");
+        connect(mirror, SIGNAL(changed()), this, SLOT(changed()));
     }
 
     void penDown(const QPoint &screen) {
@@ -60,13 +31,21 @@ public slots:
         QPoint p = mapFromGlobal(screen);
         moved = qMax(moved, qAbs(p.y() - downAt.y()));
         lastAt = p;
-        if (state == "list" && moved > TAP_MAX) scrollTo(startScroll - (p.y() - downAt.y()));
+        if (state() == "list" && moved > TAP_MAX) scrollTo(startScroll - (p.y() - downAt.y()));
     }
     void penBurst() {}
     void penUp() {
         if (!pressed) return;
         pressed = false;
         if (moved <= TAP_MAX) tap(downAt);
+    }
+
+signals:
+    void open(const QString &id);
+
+public slots:
+    void changed() {
+        if (isVisible()) update();
     }
 
 protected:
@@ -90,21 +69,22 @@ protected:
         f.setPixelSize(30);
         p.setFont(f);
         p.setPen(Qt::black);
-        if (state == "probing") {
+        QString now = state();
+        if (now == "probing") {
             f.setBold(false);
             f.setPixelSize(22);
             p.setFont(f);
             p.drawText(rect(), Qt::AlignCenter, QString::fromUtf8("Suche den Hub \xe2\x80\xa6"));
             return;
         }
-        if (state == "unreachable") {
+        if (now == "unreachable") {
             p.drawText(QRect(40, 40, width() - 80, 50), Qt::AlignLeft | Qt::AlignVCenter, "Kein Hub erreichbar");
             f.setBold(false);
             f.setPixelSize(19);
             p.setFont(f);
             p.drawText(QRect(40, 100, width() - 80, 120), Qt::AlignLeft | Qt::TextWordWrap,
-                       QString::fromUtf8("Der Hub auf dem Laptop antwortet weder \xc3\xbc" "ber das USB-Kabel noch \xc3\xbc" "ber WLAN. "
-                                         "L\xc3\xa4uft eee-review hub, und steckt das Kabel?"));
+                       QString::fromUtf8("Der Hub auf dem Laptop antwortet weder \xc3\xbc" "ber das USB-Kabel noch \xc3\xbc" "ber WLAN, "
+                                         "und auf dem Tablet liegt noch nichts. L\xc3\xa4uft eee-review hub, und steckt das Kabel?"));
             paintButton(p, retryRect(), "Nochmal", false, 22);
             paintButton(p, quitRect(), "Beenden", false, 22);
             return;
@@ -112,6 +92,8 @@ protected:
         p.translate(0, -scrollY);
         p.drawText(QRect(16, 12, width() - 200, 50), Qt::AlignLeft | Qt::AlignVCenter, "Reviews");
         paintButton(p, quitRect(), "Beenden", false, 20);
+        paintConnection(p);
+        QVariantList items = mirror->inbox();
         if (items.isEmpty()) {
             f.setBold(false);
             f.setPixelSize(20);
@@ -122,6 +104,7 @@ protected:
         for (int i = 0; i < items.size(); ++i) {
             QRect box = itemRect(i);
             QVariantMap item = items[i].toMap();
+            QString id = item.value("id").toString();
             bool fresh = item.value("status").toString() == "open";
             p.fillRect(box, Qt::black);
             p.fillRect(box.adjusted(fresh ? 6 : 3, fresh ? 6 : 3, fresh ? -6 : -3, fresh ? -6 : -3), Qt::white);
@@ -133,60 +116,47 @@ protected:
             f.setBold(false);
             f.setPixelSize(18);
             p.setFont(f);
-            QString sub = QString::fromUtf8("%1 \xc2\xb7 Runde %2 \xc2\xb7 %3")
+            QString label = item.value("label").toString();
+            if (mirror->submitWaiting(id)) label = mirror->online() ? "wird gesendet" : "wartet auf den Hub";
+            QString copy = mirror->ready(id) ? QString("auf dem Tablet")
+                         : mirror->online() ? QString::fromUtf8("l\xc3\xa4" "dt \xe2\x80\xa6")
+                                            : QString("nur mit Hub");
+            QString sub = QString::fromUtf8("%1 \xc2\xb7 Runde %2 \xc2\xb7 %3 \xc2\xb7 %4")
                               .arg(item.value("kind").toString() == "code" ? "Code" : "Dokument")
                               .arg(item.value("round").toInt())
-                              .arg(item.value("label").toString());
+                              .arg(label, copy);
             p.setPen(QColor(0x44, 0x44, 0x44));
             p.drawText(text, Qt::AlignLeft | Qt::AlignBottom, sub);
             p.setPen(Qt::black);
         }
     }
 
-private slots:
-    void fetched(QNetworkReply *reply) {
-        reply->deleteLater();
-        QString what = reply->property("what").toString();
-        if (what == "ping") {
-            if (reply != pending) return;
-            probeTimeout.stop();
-            pending = 0;
-            if (reply->error() == QNetworkReply::NoError) {
-                hub = urls[tried];
-                fprintf(stderr, "hub at %s\n", qPrintable(hub));
-                state = "list";
-                refresh();
-                refreshTimer.start(10000);
-                update();
-                return;
-            }
-            fprintf(stderr, "no hub at %s: %s\n", qPrintable(urls[tried]), qPrintable(reply->errorString()));
-            // The cable comes up a few seconds after start.sh loads the gadget, once the Mac has
-            // noticed the device and eeelink on both ends has connected, so it gets several tries.
-            if (tried == 0 && ++attempts < CABLE_ATTEMPTS) {
-                QTimer::singleShot(1000, this, SLOT(start()));
-                return;
-            }
-            ++tried;
-            attempts = 0;
-            start();
-        } else if (what == "inbox" && reply->error() == QNetworkReply::NoError) {
-            items = parseJson(reply->readAll()).toList();
-            if (isVisible()) update();
-        }
-    }
-    void probeTimedOut() {
-        if (pending) pending->abort();
-    }
-
 private:
-    static const int CABLE_ATTEMPTS = 6;
-    QRect quitRect() const { return state == "unreachable" ? QRect(230, 240, 170, 56) : QRect(width() - 150, 16, 134, 44); }
+    // The list whenever there is one to show, from the hub or the tablet's copy.
+    QString state() const {
+        if (mirror->hasInbox() || mirror->online()) return "list";
+        return mirror->connection() == "probing" ? "probing" : "unreachable";
+    }
+    void paintConnection(QPainter &p) {
+        QString text;
+        if (mirror->connection() == "probing") text = QString::fromUtf8("Suche den Hub \xe2\x80\xa6");
+        else if (mirror->online()) text = mirror->viaCable() ? "Hub per Kabel" : "Hub per WLAN";
+        else text = "Offline";
+        int waiting = mirror->waiting();
+        if (waiting) text += QString::fromUtf8(" \xc2\xb7 %1 wartend").arg(waiting);
+        QFont f = font();
+        f.setPixelSize(18);
+        p.setFont(f);
+        p.setPen(QColor(0x44, 0x44, 0x44));
+        p.drawText(QRect(170, 12, width() - 340, 50), Qt::AlignRight | Qt::AlignVCenter, text);
+        p.setPen(Qt::black);
+    }
+    QRect quitRect() const { return state() == "unreachable" ? QRect(230, 240, 170, 56) : QRect(width() - 150, 16, 134, 44); }
     QRect retryRect() const { return QRect(40, 240, 170, 56); }
     QRect itemRect(int i) const { return QRect(16, 76 + i * 104, width() - 32, 92); }
 
     void scrollTo(int y) {
-        int content = itemRect(items.size()).top() + 20;
+        int content = itemRect(mirror->inbox().size()).top() + 20;
         int target = qBound(0, y, qMax(0, content - height()));
         if (target == scrollY) return;
         scrollY = target;
@@ -194,31 +164,24 @@ private:
     }
 
     void tap(const QPoint &at) {
-        if (state == "unreachable") {
-            if (retryRect().contains(at)) {
-                tried = 0;
-                attempts = 0;
-                start();
-            } else if (quitRect().contains(at)) qApp->quit();
+        QString now = state();
+        if (now == "unreachable") {
+            if (retryRect().contains(at)) mirror->start();
+            else if (quitRect().contains(at)) qApp->quit();
             return;
         }
-        if (state != "list") return;
+        if (now != "list") return;
         QPoint p = at + QPoint(0, scrollY);
         if (quitRect().contains(p)) {
             qApp->quit();
             return;
         }
+        QVariantList items = mirror->inbox();
         for (int i = 0; i < items.size(); ++i)
             if (itemRect(i).contains(p)) emit open(items[i].toMap().value("id").toString());
     }
 
-    QStringList urls;
-    int tried, attempts;
-    QString hub, state;
-    QNetworkAccessManager net;
-    QNetworkReply *pending;
-    QTimer probeTimeout, refreshTimer;
-    QVariantList items;
+    Mirror *mirror;
     bool pressed;
     QPoint downAt, lastAt;
     int moved, startScroll, scrollY;

@@ -107,12 +107,15 @@ test('a code review of the files asked for goes to the tablet as pages and marku
 
     const diff = client.docs[0];
     const added = diff.rowNew.indexOf(2);
-    const rendered = await (await fetch(`${base}/r/${review.id}/pages/0/index.json`)).json();
-    const strip = Buffer.from(await (await fetch(`${base}/r/${review.id}/pages/0/0.png`)).arrayBuffer());
+    const inbox = await call('GET', '/api/inbox');
+    assert.deepEqual(inbox.map((r) => [r.id, r.round, r.docs]), [[review.id, 1, 3]]);
+    const rendered = await (await fetch(`${base}/r/${review.id}/1/pages/0/index.json`)).json();
+    const strip = Buffer.from(await (await fetch(`${base}/r/${review.id}/1/pages/0/0.png`)).arrayBuffer());
     assert.ok(strip.subarray(1, 4).equals(Buffer.from('PNG')));
     const [, addedBottom] = rendered.rows.find(([, , row]) => row === added);
     const waiting = fetch(`${base}/api/agent/wait/${review.id}?timeout=30`).then((r) => r.json());
-    await call('POST', `/api/r/${review.id}/submit`, {
+    const submitted = {
+      round: 1,
       marks: [
         {
           id: 'm1',
@@ -132,7 +135,8 @@ test('a code review of the files asked for goes to the tablet as pages and marku
         },
         { id: 'm2', doc: diff.id, ink: [[[20, addedBottom + 4], [300, addedBottom + 5]]], note: [] },
       ],
-    });
+    };
+    await call('POST', `/api/r/${review.id}/submit`, submitted);
     const feedback = await waiting;
     assert.equal(feedback.status, 'feedback');
     assert.equal(feedback.marks[0].where, 'auth.js (Diff, Zeile 2)');
@@ -140,6 +144,8 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     assert.equal(feedback.marks[0].stamp, 'no');
     assert.equal(feedback.marks[1].where, 'auth.js (Diff, Zeile 2)', 'ink alone is located on the rendered page');
     assert.ok(Buffer.from(feedback.marks[0].note, 'base64').subarray(1, 4).equals(Buffer.from('PNG')));
+    await call('POST', `/api/r/${review.id}/submit`, submitted);
+    assert.equal((await call('GET', `/api/agent/wait/${review.id}?timeout=1`)).status, 'waiting', 'a resent submit is not new feedback');
 
     const { review: next } = await call('POST', `/api/agent/respond/${review.id}`, {
       replies: [{ mark: 1, text: 'Removed the log call.' }],
@@ -148,6 +154,9 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     const round2 = await (await fetch(`${base}/r/${review.id}`)).text();
     assert.match(round2, /Removed the log call\./);
     assert.match(round2, new RegExp(`/r/${review.id}/note/1/m1`));
+    const late = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', body: JSON.stringify({ round: 1, marks: [] }) });
+    assert.equal(late.status, 409, 'a draft queued for the last round is refused');
+    assert.equal((await fetch(`${base}/r/${review.id}/1/pages/2/index.json`)).status, 404, 'a past round is not rendered anew');
 
     await call('POST', `/api/agent/context/${review.id}`, { files: ['auth.js'] });
     const withContext = JSON.parse(

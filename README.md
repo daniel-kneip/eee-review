@@ -67,6 +67,17 @@ die Mac-Seite spricht es über libusb an, und das Tablet nutzt `/dev/ttyGS0`.
   ihn nur noch übers Kabel. Mit abgeschaltetem WLAN ist dann auch das Telnet des Tablets
   von außen nicht mehr zu erreichen.
 
+## Ohne Laptop
+
+Solange der Hub erreichbar ist, lädt die App alle offenen Reviews samt Seiten nach
+`/eTablet/eee-review/cache`. In der Eingangsliste steht dann „auf dem Tablet“, und das Review
+lässt sich auch ohne Kabel öffnen, markieren und abschicken. Entwürfe, Fragen und abgeschickte
+Runden kommen in einen Ausgang auf dem Tablet. Sobald der Hub wieder antwortet, gehen sie in
+ihrer Reihenfolge raus. Die App sucht dafür alle zehn Sekunden nach ihm.
+
+Der Hub nimmt nur Sendungen für die aktuelle Runde an. Ein doppelt gesendetes Abschicken oder
+eine doppelte Frage ändert nichts.
+
 ## Ablauf
 
 1. „Schick mir das Spec zum Review" oder „Lass mich den Code reviewen". Der Agent ruft
