@@ -5,7 +5,7 @@ aufs Tablet. Dort wird mit dem Stift markiert und handschriftlich kommentiert, u
 Runde für Runde an den Agenten zurück.
 
 ```
-Agent ──MCP──▶ eee-review mcp ──HTTP──▶ Hub (Laptop, Port 8770) ◀──WLAN── eeereview (Tablet)
+Agent ──MCP──▶ eee-review mcp ──HTTP──▶ Hub (Laptop, Port 8770) ◀──USB/WLAN── eeereview (Tablet)
 ```
 
 - **Hub** (`src/hub`): Hält die Reviews unter `~/.eee-review` und rendert Markdown, Code und
