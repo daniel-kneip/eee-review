@@ -43,3 +43,12 @@ h1 {
   font-size: 20px;
   color: #444;
 }
+.native {
+  display: none;
+  font-size: 18px;
+  color: #000;
+  margin: -6px 0 14px;
+}
+.app .native {
+  display: block;
+}

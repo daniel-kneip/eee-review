@@ -1,5 +1,5 @@
 TEMPLATE = app
 TARGET = eeereview
-QT += webkit network
-HEADERS = ../common/pen.h
+QT += webkit network script
+HEADERS = ../common/pen.h native.h baker.h
 SOURCES = main.cpp

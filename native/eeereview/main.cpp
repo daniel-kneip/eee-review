@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "../common/pen.h"
+#include "native.h"
 
 // Matches INK_WIDTH in web/review.js.
 static const int INK_WIDTH = 2;
@@ -32,6 +33,20 @@ public:
 protected:
     void javaScriptConsoleMessage(const QString &message, int line, const QString &source) {
         fprintf(stderr, "js %s:%d: %s\n", qPrintable(source), line, qPrintable(message));
+    }
+
+signals:
+    void nativeRequested(const QString &id);
+
+protected:
+    // The inbox's test link to a review drawn natively opens it outside WebKit.
+    bool acceptNavigationRequest(QWebFrame *frame, const QNetworkRequest &request, NavigationType type) {
+        QRegExp native("^/r/([0-9a-f]{8})/native$");
+        if (native.indexIn(request.url().path()) >= 0) {
+            emit nativeRequested(native.cap(1));
+            return false;
+        }
+        return QWebPage::acceptNavigationRequest(frame, request, type);
     }
 
 public slots:
@@ -105,8 +120,11 @@ private slots:
 class ReviewView : public QWebView {
     Q_OBJECT
 public:
-    ReviewView(const QStringList &list) : urls(list), tried(0), attempts(0), started(false), swallowing(false), pending(0) {
-        setPage(new LoggingPage(this));
+    ReviewView(const QStringList &list)
+        : urls(list), tried(0), attempts(0), started(false), swallowing(false), pending(0), nativeView(0) {
+        LoggingPage *logging = new LoggingPage(this);
+        setPage(logging);
+        connect(logging, SIGNAL(nativeRequested(QString)), this, SLOT(openNative(QString)));
         connect(page()->mainFrame(), SIGNAL(javaScriptWindowObjectCleared()), this, SLOT(exposeApp()));
         connect(&bridge, SIGNAL(retryRequested()), this, SLOT(restart()));
         connect(this, SIGNAL(loadStarted()), this, SLOT(loading()));
@@ -154,7 +172,7 @@ protected:
     // The Eee Note's buttons arrive as function keys. The page gets the first say; Back and
     // Home leave the app when it does not take them.
     void keyPressEvent(QKeyEvent *event) {
-        QString name = buttonName(event->key());
+        QString name = native::buttonName(event->key());
         if (name.isEmpty()) {
             fprintf(stderr, "%s key 0x%x\n", stamp(), event->key());
             if (event->key() == Qt::Key_Escape) qApp->quit();
@@ -165,20 +183,6 @@ protected:
         bool taken = run(QString("window.keys ? keys.press('%1') : false").arg(name)).toBool();
         if (!taken && (name == "back" || name == "home")) qApp->quit();
     }
-    static QString buttonName(int key) {
-        switch (key) {
-        case Qt::Key_F1: return "back";
-        case Qt::Key_F2: return "g1";
-        case Qt::Key_F3: return "g2";
-        case Qt::Key_F4: return "g3";
-        case Qt::Key_F5: return "g4";
-        case Qt::Key_F6: return "left";
-        case Qt::Key_F9: return "home";
-        case Qt::Key_F12: return "right";
-        default: return QString();
-        }
-    }
-
     // tslib delivers the same pen as mouse events. Over a canvas they would set WebKit
     // selecting text for every move, work the GUI thread cannot spare while ink is drawn,
     // so a press there is kept from WebKit until its release.
@@ -211,6 +215,23 @@ protected:
     }
 
 private slots:
+    void openNative(const QString &id) {
+        fprintf(stderr, "%s native review %s\n", stamp(), qPrintable(id));
+        nativeView = new native::ReviewWidget(urls[tried], id);
+        nativeView->setWindowFlags(Qt::FramelessWindowHint);
+        nativeView->setGeometry(geometry());
+        connect(nativeView, SIGNAL(closed()), this, SLOT(closeNative()));
+        nativeView->show();
+        nativeView->setFocus();
+        hide();
+    }
+    void closeNative() {
+        nativeView->deleteLater();
+        nativeView = 0;
+        show();
+        setFocus();
+        load(QUrl(urls[tried]));
+    }
     void exposeApp() { page()->mainFrame()->addToJavaScriptWindowObject("eeeApp", &bridge); }
     void probed(QNetworkReply *reply) {
         reply->deleteLater();
@@ -251,6 +272,7 @@ private slots:
         fprintf(stderr, "%s loaded %s: %s\n", stamp(), qPrintable(url().toString()), ok ? "ok" : "failed");
     }
     void penDown(int x, int y, int, qint64) {
+        if (nativeView) { nativeView->penDown(calibration.toScreen(x, y)); return; }
         QPoint p = toView(x, y);
         mode = run(QString("window.pen ? pen.down(%1, %2) : ''").arg(p.x()).arg(p.y())).toString();
         ink.clear();
@@ -260,6 +282,7 @@ private slots:
     }
     void penMoved(int x, int y, int, qint64) {
         stats.penFrames++;
+        if (nativeView) { nativeView->penMoved(calibration.toScreen(x, y)); return; }
         QPoint p = toView(x, y);
         if (mode == "stream") streaming << p;
         if (mode != "ink" || p == ink.last()) return;
@@ -268,11 +291,13 @@ private slots:
         dirty |= QRect(last, p).normalized().adjusted(-4, -4, 4, 4);
     }
     void showInk() {
+        if (nativeView) { nativeView->penBurst(); return; }
         if (dirty.isEmpty()) return;
         repaint(dirty);
         dirty = QRect();
     }
     void penUp() {
+        if (nativeView) { nativeView->penUp(); return; }
         if (mode == "ink") {
             run("pen.stroke(" + points(ink.mid(1)) + ")");
             QRect dirty = QPolygon(ink).boundingRect().adjusted(-4, -4, 4, 4);
@@ -335,6 +360,7 @@ private:
         int paints, paintMs, paintArea, mouseMoves, penFrames, js, jsMs;
     } stats;
     QTimer streamBatch;
+    native::ReviewWidget *nativeView;
 };
 
 // Started from the menu, the app gets no arguments and no log: it brings up the USB link

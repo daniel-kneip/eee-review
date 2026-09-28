@@ -80,7 +80,7 @@ function inboxPage(store) {
       (r) =>
         `<a class="item${r.status === 'open' ? ' new' : ''}" href="/r/${r.id}"><b>${escapeHtml(r.title)}</b><span>${
           r.kind === 'code' ? 'Code' : 'Dokument'
-        } · Runde ${r.round} · ${STATUS[r.status] ?? r.status}</span></a>`,
+        } · Runde ${r.round} · ${STATUS[r.status] ?? r.status}</span></a><a class="native" href="/r/${r.id}/native">nativ öffnen (Test)</a>`,
     )
     .join('');
   return `<!DOCTYPE html>
@@ -89,7 +89,7 @@ function inboxPage(store) {
 <title>Reviews</title><link rel="stylesheet" href="/web/inbox.css"></head>
 <body><button type="button" id="quit" onclick="eeeApp.quit()">Beenden</button><h1>Reviews</h1>${
     items || '<p class="empty">Nichts offen. Neue Reviews erscheinen hier von selbst.</p>'
-  }<script type="text/javascript">if (window.eeeApp) document.getElementById('quit').style.display = 'block';
+  }<script type="text/javascript">if (window.eeeApp) { document.getElementById('quit').style.display = 'block'; document.body.className = 'app'; }
 window.keys = { press: function (name) {
   if (name === 'left' || name === 'right') { window.scrollBy(0, (name === 'left' ? -0.75 : 0.75) * window.innerHeight); return true; }
   return false;

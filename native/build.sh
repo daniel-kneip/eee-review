@@ -32,6 +32,7 @@ for app in "${apps[@]}"; do
     rm -rf /tmp/b && mkdir -p /tmp/b/common /tmp/b/$app
     cp /src/common/pen.h /tmp/b/common/
     cp /src/$app/*.cpp /src/$app/*.pro /tmp/b/$app/
+    cp /src/$app/*.h /tmp/b/$app/ 2>/dev/null || true
     cd /tmp/b/$app && qmake -spec qws/linux-EA800-g++ >/dev/null
     make >/tmp/b/make.log 2>&1 || { grep -iE 'error' /tmp/b/make.log; exit 1; }
     grep -iE 'warning' /tmp/b/make.log || true
