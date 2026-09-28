@@ -21,12 +21,21 @@
 // this CPU is what kept the ink trailing the pen.
 // Page script errors and console output go to stderr, the only place to see them on the tablet.
 class LoggingPage : public QWebPage {
+    Q_OBJECT
 public:
     LoggingPage(QObject *parent) : QWebPage(parent) {}
 
 protected:
     void javaScriptConsoleMessage(const QString &message, int line, const QString &source) {
         fprintf(stderr, "js %s:%d: %s\n", qPrintable(source), line, qPrintable(message));
+    }
+
+public slots:
+    // QtWebKit asks this when a page script has run for several seconds. Stopping it keeps
+    // the tablet usable; a review page never has work that takes that long.
+    bool shouldInterruptJavaScript() {
+        fprintf(stderr, "js: script ran too long, interrupted\n");
+        return true;
     }
 };
 
@@ -48,6 +57,8 @@ public:
         connect(pen, SIGNAL(moved(int, int, int, qint64)), this, SLOT(penMoved(int, int, int, qint64)));
         connect(pen, SIGNAL(up()), this, SLOT(penUp()));
         connect(pen, SIGNAL(burstDone()), this, SLOT(showInk()));
+        connect(&heartbeat, SIGNAL(timeout()), this, SLOT(beat()));
+        heartbeat.start(5000);
         streamBatch.setInterval(40);
         connect(&streamBatch, SIGNAL(timeout()), this, SLOT(flushStream()));
     }
@@ -74,6 +85,7 @@ protected:
         if (!swallowing) QWebView::mousePressEvent(event);
     }
     void mouseMoveEvent(QMouseEvent *event) {
+        stats.mouseMoves++;
         if (!swallowing) QWebView::mouseMoveEvent(event);
     }
     void mouseReleaseEvent(QMouseEvent *event) {
@@ -82,7 +94,12 @@ protected:
     }
 
     void paintEvent(QPaintEvent *event) {
+        QTime clock;
+        clock.start();
         QWebView::paintEvent(event);
+        stats.paints++;
+        stats.paintMs += clock.elapsed();
+        stats.paintArea += event->rect().width() * event->rect().height();
         if (ink.size() < 2) return;
         QPainter painter(this);
         painter.setClipRect(event->rect());
@@ -111,6 +128,11 @@ private slots:
     void probeTimedOut() {
         if (pending) pending->abort();
     }
+    void beat() {
+        fprintf(stderr, "%s alive: %d paints %d ms %d kpx, %d mouse moves, %d pen frames, %d js %d ms\n", stamp(), stats.paints,
+                stats.paintMs, stats.paintArea / 1000, stats.mouseMoves, stats.penFrames, stats.js, stats.jsMs);
+        stats = Stats();
+    }
     void loading() { fprintf(stderr, "%s loading\n", stamp()); }
     void fetched(QNetworkReply *reply) {
         if (reply->error() != QNetworkReply::NoError) {
@@ -130,6 +152,7 @@ private slots:
         else if (mode == "stream") streamBatch.start();
     }
     void penMoved(int x, int y, int pressure, qint64) {
+        stats.penFrames++;
         QPoint p = toView(x, y);
         if (mode == "stream") streaming << p;
         if (mode != "ink" || p == ink.last()) return;
@@ -172,7 +195,14 @@ private:
         return "[" + out.join(",") + "]";
     }
     QPoint toView(int x, int y) const { return mapFromGlobal(calibration.toScreen(x, y)); }
-    QVariant run(const QString &script) { return page()->mainFrame()->evaluateJavaScript(script); }
+    QVariant run(const QString &script) {
+        QTime clock;
+        clock.start();
+        QVariant r = page()->mainFrame()->evaluateJavaScript(script);
+        stats.js++;
+        stats.jsMs += clock.elapsed();
+        return r;
+    }
 
     Calibration calibration;
     QString mode;
@@ -192,6 +222,11 @@ private:
     QNetworkAccessManager probe;
     QNetworkReply *pending;
     QTimer probeTimeout;
+    QTimer heartbeat;
+    struct Stats {
+        Stats() : paints(0), paintMs(0), paintArea(0), mouseMoves(0), penFrames(0), js(0), jsMs(0) {}
+        int paints, paintMs, paintArea, mouseMoves, penFrames, js, jsMs;
+    } stats;
     QTimer streamBatch;
 };
 

@@ -61,7 +61,9 @@
     node.style.display = height > 0 ? 'block' : 'none';
   }
 
+  var layouts = 0;
   function layout() {
+    if (++layouts % 25 === 0 && window.console) console.log('layout ' + layouts);
     viewport();
     var body = H - TOOLBAR_H;
     if (!noteH) noteH = Math.round(body * 0.42);
@@ -74,12 +76,22 @@
     place(noteBar, 0, docH, W, openMark ? NOTEBAR_H : 0);
     place(notePane, 0, docH + NOTEBAR_H, W, notePaneH);
     place(toolBar, 0, H - TOOLBAR_H, W, TOOLBAR_H);
-    docCanvas.width = docW; docCanvas.height = docH;
-    rail.width = RAIL_W; rail.height = docH;
-    noteCanvas.width = W; noteCanvas.height = Math.max(notePaneH, 1);
+    // The document and note canvases keep the largest size their pane can reach and the pane
+    // clips them, so opening, closing and resizing the note never reallocates them. The rail
+    // is sized by its own style box, and small enough to reallocate.
+    size(docCanvas, docW, body);
+    size(noteCanvas, W, body - NOTEBAR_H - MIN_PANE);
+    size(rail, RAIL_W, docH);
     if (docLayer.style.width !== docW + 'px') { docLayer.style.width = docW + 'px'; rowBoxes = []; heights = []; measure(); }
     clampScroll();
-    redrawDoc(); redrawNote(); redrawRail(); status();
+    timed('redraw', function () { redrawDoc(); redrawNote(); redrawRail(); });
+    status();
+  }
+
+  // Assigning a canvas size clears and reallocates it even when the size is unchanged.
+  function size(canvas, w, h) {
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
   }
 
   // The fragment is moved, not copied, so a document keeps its layout between visits.
@@ -146,15 +158,34 @@
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x === a.x && b.y === a.y ? b.x + 0.5 : b.x, b.y); ctx.stroke();
   }
 
+  // Consecutive segments of the same width, rounded to half a pixel, share one path: a
+  // stroke() per segment costs the tablet's canvas milliseconds each, and a note has hundreds.
   function drawStroke(ctx, pts, toScreen, extra) {
     if (!pts.length) return;
     var a = toScreen(pts[0]);
     if (pts.length === 1) { segment(ctx, a, a, pts[0].p, extra); return; }
+    var width = null;
     for (var i = 1; i < pts.length; i++) {
       var b = toScreen(pts[i]);
-      segment(ctx, a, b, pts[i].p, extra);
+      var w = Math.round(inkWidth(pts[i].p) * 2) / 2 + (extra || 0);
+      if (w !== width) {
+        if (width !== null) ctx.stroke();
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        width = w;
+      }
+      ctx.lineTo(b.x, b.y);
       a = b;
     }
+    ctx.stroke();
+  }
+
+  function timed(name, fn) {
+    var t = now();
+    fn();
+    var ms = now() - t;
+    if (ms > 150 && window.console) console.log(name + ' took ' + ms + ' ms');
   }
 
   function bbox(mark) {
@@ -223,14 +254,14 @@
 
   function openNote(mark) {
     openMark = mark;
-    layout();
+    timed('open note', layout);
     var b = bbox(mark);
     if (b.y0 < scrolls[cur] || b.y1 > scrolls[cur] + docH) scrollTo(b.y0 - docH * 0.25);
   }
 
   function closeNote() {
     openMark = null;
-    layout();
+    timed('close note', layout);
     scheduleSave();
   }
 
@@ -361,15 +392,17 @@
     return q;
   }
 
-  function extend(x, y, p) {
+  function extend(x, y, p, quiet) {
     if (!active) return;
     var s = local(active.target, x, y), dy = y - active.startY;
     active.moved = Math.max(active.moved, Math.abs(dy));
     if (active.action === 'ink') {
       var q = point(active.target, s, p);
-      var ctx = active.target === 'doc' ? docCtx : noteCtx;
-      pen(ctx);
-      segment(ctx, active.last, s, q.p, 0);
+      if (!quiet) {
+        var ctx = active.target === 'doc' ? docCtx : noteCtx;
+        pen(ctx);
+        segment(ctx, active.last, s, q.p, 0);
+      }
       active.pts.push(q);
       active.last = s;
     } else if (active.action === 'erase') {
@@ -434,7 +467,16 @@
     over: function (x, y) { return !!targetAt(x, y); },
     down: function (x, y, p) { return begin(x, y, p, false); },
     move: function (points) { for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], points[i][2]); },
-    stroke: function (points) { this.move(points); end(); },
+    // The app has drawn this stroke already; the page adds it and draws it once.
+    stroke: function (points) {
+      if (!active) return;
+      for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], points[i][2], true);
+      if (active.action === 'ink' && active.target === 'note') {
+        pen(noteCtx);
+        drawStroke(noteCtx, active.pts, noteToScreen, 0);
+      }
+      timed('stroke end', end);
+    },
     up: function () { end(); }
   };
 
@@ -613,7 +655,13 @@
     if (e.keyCode === 38 || e.keyCode === 33 || e.keyCode === 37) { scrollTo(scrolls[cur] - docH * 0.75); return false; }
     if (e.keyCode === 40 || e.keyCode === 34 || e.keyCode === 39) { scrollTo(scrolls[cur] + docH * 0.75); return false; }
   };
-  window.onresize = layout;
+  // QtWebKit on the tablet fires resize when the page resizes its own panes; answering every
+  // one with a layout feeds it back without end and starves the app.
+  window.onresize = function () {
+    var w = window.innerWidth || document.documentElement.clientWidth;
+    var h = window.innerHeight || document.documentElement.clientHeight;
+    if (w !== W || h !== H) layout();
+  };
 
   for (var k = 0; k < (R.marks || []).length; k++) {
     var saved = R.marks[k];

@@ -51,7 +51,7 @@ canvas {
   color: #fff;
 }
 .bar span {
-  font-size: 17px;
+  font-size: 15px;
   margin-left: 8px;
 }
 #noteBar {
@@ -136,30 +136,30 @@ canvas {
 .spec {
   padding: 16px 20px 40px;
   font:
-    20px/1.45 Georgia,
+    17px/1.45 Georgia,
     serif;
 }
 .spec h1 {
-  font: bold 30px/1.2 sans-serif;
+  font: bold 25px/1.2 sans-serif;
   margin: 4px 0 10px;
 }
 .spec h2 {
-  font: bold 24px/1.3 sans-serif;
+  font: bold 20px/1.3 sans-serif;
   margin: 26px 0 8px;
   border-bottom: 3px solid #000;
   padding-bottom: 3px;
 }
 .spec h3 {
-  font: bold 21px/1.3 sans-serif;
+  font: bold 17px/1.3 sans-serif;
   margin: 20px 0 6px;
 }
 .spec code {
-  font: 17px/1.4 monospace;
+  font: 14px/1.4 monospace;
   background: #e6e6e6;
   padding: 0 4px;
 }
 .spec pre.code {
-  font: 16px/1.45 monospace;
+  font: 14px/1.4 monospace;
   border: 2px solid #000;
   padding: 8px 10px;
   white-space: pre-wrap;
@@ -177,7 +177,7 @@ canvas {
 .spec table {
   border-collapse: collapse;
   margin: 12px 0;
-  font-size: 17px;
+  font-size: 15px;
 }
 .spec td,
 .spec th {
@@ -218,25 +218,25 @@ canvas {
 }
 
 .code .head {
-  font: bold 20px/1.3 sans-serif;
+  font: bold 18px/1.3 sans-serif;
   padding: 14px 12px 8px;
   border-bottom: 3px solid #000;
   word-wrap: break-word;
 }
 .code .sub {
-  font: 15px sans-serif;
+  font: 13px sans-serif;
   color: #444;
   padding: 4px 12px 0;
 }
 .code .hunk {
-  font: 14px/1.4 monospace;
+  font: 12px/1.4 monospace;
   background: #e6e6e6;
   color: #333;
   padding: 5px 12px;
   margin-top: 12px;
 }
 .code .gap {
-  font: italic 15px sans-serif;
+  font: italic 13px sans-serif;
   color: #555;
   padding: 6px 12px;
 }
@@ -253,16 +253,16 @@ canvas {
   width: 40px;
   text-align: right;
   padding-right: 5px;
-  font: 13px/1.6 monospace;
+  font: 12px/1.6 monospace;
   color: #666;
 }
 .code td.sign {
   width: 16px;
-  font: bold 16px/1.45 monospace;
+  font: bold 14px/1.45 monospace;
   text-align: center;
 }
 .code td.src {
-  font: 16px/1.45 monospace;
+  font: 14px/1.4 monospace;
   white-space: pre-wrap;
   word-wrap: break-word;
   padding-right: 8px;
