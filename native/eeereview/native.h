@@ -20,6 +20,9 @@ namespace native {
 
 static const int TOOLBAR_H = 54, NOTEBAR_H = 54, RAIL_W = 38, MIN_PANE = 120, RULE = 60;
 static const int NOTE_TILE = 256;
+// Decoded strips and baked tiles are kept this many strips around the view. Kept for every
+// strip visited they filled 70 MB of the tablet's 256 in a review of 14 files.
+static const int KEEP_STRIPS = 2;
 static const int TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800, NEAR = 120, CONFIRM_MS = 5000;
 
 struct Mark {
@@ -188,7 +191,7 @@ class ReviewWidget : public QWidget {
 public:
     ReviewWidget(Mirror *mirror, const QString &id)
         : mirror(mirror), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
-          drawerOpen(false), drawerScroll(0), drawerHeight(0), jumpDoc(-1), jumpLine(0) {
+          loggedRss(0), drawerOpen(false), drawerScroll(0), drawerHeight(0), jumpDoc(-1), jumpLine(0) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
         connect(mirror, SIGNAL(got(QString, QByteArray, bool)), this, SLOT(got(QString, QByteArray, bool)));
@@ -349,8 +352,28 @@ private slots:
     void beat() {
         int ms = sinceBeat.restart();
         if (ms > 200) fprintf(stderr, "native: GUI stalled %d ms\n", ms);
+        if (!sinceMemory.isValid() || sinceMemory.elapsed() > 5000) logMemory();
     }
     void save() { mirror->post(reviewId, "draft", marksBody()); }
+    // What the view holds, whenever the resident size moved by a megabyte or more.
+    void logMemory() {
+        sinceMemory.start();
+        QList<QByteArray> statm = readFile("/proc/self/statm").split(' ');
+        int rss = statm.size() > 1 ? statm[1].toInt() * 4 / 1024 : 0;
+        if (qAbs(rss - loggedRss) < 1) return;
+        loggedRss = rss;
+        int strips = 0, pngKb = 0, shown = 0, images = 0, imageKb = 0;
+        foreach (const Doc &d, docs) {
+            foreach (const QPixmap &px, d.strips) strips += !px.isNull();
+            foreach (const QByteArray &png, d.pngs) pngKb += png.size() / 1024;
+        }
+        foreach (const Tile &t, tiles) {
+            shown += !t.shown.isNull();
+            if (!t.image.isNull()) ++images, imageKb += t.image.numBytes() / 1024;
+        }
+        fprintf(stderr, "native: rss %d MB, %d strips decoded, png %d KB, %d tiles shown, %d images %d KB\n", rss, strips,
+                pngKb, shown, images, imageKb);
+    }
     void applyBaked() {
         foreach (const Baked &b, baker->take()) {
             if (b.ms > 150) fprintf(stderr, "native: baked %s in %d ms\n", qPrintable(b.key), b.ms);
@@ -449,6 +472,7 @@ private:
         openMark.clear();
         pane = "doc";
         if (!docs[cur].loaded) mirror->get(pageKey(cur, "index.json"));
+        trimMemory();
         layoutChanged();
     }
 
@@ -498,7 +522,7 @@ private:
     void loadStrip(int index, int n, const QByteArray &data) {
         Doc &d = docs[index];
         if (n < d.strips.size()) {
-            d.strips[n].loadFromData(data, "PNG");
+            d.strips[n] = QPixmap();
             d.pngs[n] = data;
             tiles.remove(QString("d%1:%2").arg(index).arg(n));
         }
@@ -526,7 +550,7 @@ private:
         QRect clip = p.clipRegion().boundingRect();
         for (int n = 0; n < d->strips.size(); ++n) {
             int top = n * d->strip - d->scroll;
-            if (d->strips[n].isNull() || top > clip.bottom() || top + d->strip < clip.top()) continue;
+            if (d->pngs[n].isEmpty() || top > clip.bottom() || top + d->strip < clip.top()) continue;
             paintTile(p, docTile(cur, n), top, clip);
         }
         p.restore();
@@ -540,7 +564,7 @@ private:
             t.key = key;
             t.doc = di;
             t.index = n;
-            t.band = QRect(0, n * docs[di].strip, docW(), docs[di].strips[n].height());
+            t.band = QRect(0, n * docs[di].strip, docW(), qMin(docs[di].strip, docs[di].height - n * docs[di].strip));
             tiles.insert(key, t);
         }
         return tiles[key];
@@ -610,8 +634,39 @@ private:
     // cost little to draw, since only the few pixels under the pen are painted again; once it
     // moves, whole tiles come into view and their ink has to be in the image.
     bool scrolling() const { return lastScroll.isValid() && lastScroll.elapsed() < 3000; }
+    // A strip is decoded when it comes into view.
+    const QPixmap &stripAt(int di, int n) {
+        Doc &d = docs[di];
+        if (d.strips[n].isNull() && !d.pngs[n].isEmpty()) d.strips[n].loadFromData(d.pngs[n], "PNG");
+        return d.strips[n];
+    }
+    // Lets go of what is away from the view: decoded strips, and the images of tiles, which
+    // are composed again should they come back.
+    void trimMemory() {
+        for (int di = 0; di < docs.size(); ++di) {
+            Doc &d = docs[di];
+            int first = d.scroll / d.strip - KEEP_STRIPS, last = (d.scroll + docH()) / d.strip + KEEP_STRIPS;
+            for (int n = 0; n < d.strips.size(); ++n)
+                if (!d.strips[n].isNull() && (di != cur || n < first || n > last)) d.strips[n] = QPixmap();
+        }
+        for (QMap<QString, Tile>::iterator it = tiles.begin(); it != tiles.end(); ++it) {
+            Tile &t = it.value();
+            if (t.shown.isNull() && t.image.isNull()) continue;
+            bool near;
+            if (t.note) {
+                int first = openMark ? openMark->noteScroll / NOTE_TILE - KEEP_STRIPS : 0;
+                int last = openMark ? (openMark->noteScroll + noteH) / NOTE_TILE + KEEP_STRIPS : -1;
+                near = t.mark == openMark && t.index >= first && t.index <= last;
+            } else {
+                const Doc &d = docs[t.doc];
+                near = t.doc == cur && t.index >= d.scroll / d.strip - KEEP_STRIPS && t.index <= (d.scroll + docH()) / d.strip + KEEP_STRIPS;
+            }
+            if (!near) reset(t);
+        }
+    }
     void scrolled() {
         lastScroll.start();
+        trimMemory();
         for (QMap<QString, Tile>::iterator it = tiles.begin(); it != tiles.end(); ++it) {
             Tile &t = it.value();
             bool here = t.note ? t.mark == openMark : t.doc == cur;
@@ -636,7 +691,7 @@ private:
             if (job.strokes.isEmpty() && job.badges.isEmpty()) {
                 t.fresh = true;
                 t.image = QImage();
-                t.shown = t.note ? QPixmap() : docs[t.doc].strips[t.index];
+                t.shown = t.note ? QPixmap() : stripAt(t.doc, t.index);
                 t.inFlight.clear();
                 t.unbaked.clear();
                 return;
@@ -664,7 +719,7 @@ private:
                 p.fillRect(QRect(0, top, t.band.width(), t.band.height()), Qt::white);
                 for (int y = (RULE - t.band.top() % RULE) % RULE; y < t.band.height(); y += RULE)
                     p.fillRect(0, top + y, t.band.width(), 1, QColor(0xbb, 0xbb, 0xbb));
-            } else p.drawPixmap(0, top, docs[t.doc].strips[t.index]);
+            } else p.drawPixmap(0, top, stripAt(t.doc, t.index));
             Strokes strokes;
             QList<QPoint> at;
             QList<QImage> art;
@@ -1077,6 +1132,7 @@ private:
     void closeNote() {
         openMark.clear();
         pane = "doc";
+        trimMemory();
         layoutChanged();
         scheduleSave();
     }
@@ -1467,7 +1523,9 @@ private:
         if (clock.elapsed() > 50) fprintf(stderr, "native: marks to JSON took %d ms for %d bytes\n", clock.elapsed(), out.size());
         return out;
     }
-    void scheduleSave() { saveTimer.start(SAVE_DELAY); }
+    void scheduleSave() {
+        if (!locked()) saveTimer.start(SAVE_DELAY);
+    }
     void saveNow() {
         if (!saveTimer.isActive()) return;
         saveTimer.stop();
@@ -1550,7 +1608,8 @@ private:
     Baker *baker;
     QMap<QString, Tile> tiles;
     QMap<QString, QImage> arts;
-    QTime lastScroll, sinceBeat;
+    QTime lastScroll, sinceBeat, sinceMemory;
+    int loggedRss;
     bool drawerOpen;
     int drawerScroll, drawerHeight, startDrawerScroll, jumpDoc, jumpLine;
     QList<DrawerRow> drawerRows;
