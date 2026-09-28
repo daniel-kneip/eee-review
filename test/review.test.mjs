@@ -147,7 +147,7 @@ test('a code review goes to the tablet, comes back with located marks, and retur
     const withContext = JSON.parse(
       (await (await fetch(`${base}/r/${review.id}`)).text()).match(/var REVIEW = (.*);<\/script>/)[1],
     );
-    assert.equal(withContext.docs.filter((d) => d.added).length, 0, 'a file already shown whole is not added twice');
+    assert.equal(withContext.docs.filter((d) => d.context).length, 0, 'a file already shown whole is not added twice');
   } finally {
     server.close();
   }

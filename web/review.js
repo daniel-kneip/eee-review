@@ -598,6 +598,11 @@
   }
 
   // ── Document list ───────────────────────────────────────────────────────
+  // A drawer from the left: the agent's replies, the documents, the changed files as a tree
+  // with folders that fold, and files the agent added for context. In a code review the
+  // arrows in the bottom bar step through the changed files in the tree's order.
+
+  var collapsed = {};
 
   function counterpart(kind) {
     for (var i = 0; i < R.docs.length; i++) if (doc().path && R.docs[i].path === doc().path && R.docs[i].kind === kind) return i;
@@ -614,7 +619,7 @@
   }
 
   function go(index, line) {
-    filesView.style.display = 'none';
+    closeFiles();
     openMark = null;
     showDocument(index);
     layout();
@@ -627,52 +632,137 @@
 
   function marksIn(id) { var n = 0; for (var i = 0; i < marks.length; i++) if (marks[i].doc === id) n++; return n; }
 
+  function escape(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+  // Changed files as nested folders: { dirs: { name: node }, files: [doc index] }.
+  function changeTree() {
+    var root = { dirs: {}, files: [] };
+    for (var i = 0; i < R.docs.length; i++) {
+      var dd = R.docs[i];
+      if (dd.kind !== 'diff') continue;
+      var parts = dd.path.split('/'), node = root;
+      for (var p = 0; p < parts.length - 1; p++) {
+        if (!node.dirs[parts[p]]) node.dirs[parts[p]] = { dirs: {}, files: [] };
+        node = node.dirs[parts[p]];
+      }
+      node.files.push(i);
+    }
+    return root;
+  }
+
+  function dirNames(node) { var out = []; for (var k in node.dirs) if (node.dirs.hasOwnProperty(k)) out.push(k); return out.sort(); }
+
+  // Diff documents in the order the tree shows them, for the arrows.
+  function diffOrder(node, out) {
+    var names = dirNames(node);
+    for (var d = 0; d < names.length; d++) diffOrder(node.dirs[names[d]], out);
+    for (var f = 0; f < node.files.length; f++) out.push(node.files[f]);
+    return out;
+  }
+
+  function fileRow(i, depth) {
+    var dd = R.docs[i], n = marksIn(dd.id), whole = -1;
+    for (var j = 0; j < R.docs.length; j++) if (R.docs[j].kind === 'file' && R.docs[j].path === dd.path) whole = j;
+    var here = i === cur || (whole >= 0 && whole === cur);
+    return '<div class="tree-row' + (here ? ' cur' : '') + '" data-doc="' + i + '" style="padding-left:' + (10 + depth * 18) + 'px">' +
+      '<span class="st">' + (dd.status || '') + '</span>' + escape(dd.title) +
+      ' <span class="delta">+' + (dd.plus || 0) + ' &minus;' + (dd.minus || 0) + '</span>' +
+      (n ? ' <span class="count">&middot; ' + n + ' Mark.</span>' : '') +
+      (whole >= 0 ? '<span class="whole" data-doc="' + whole + '">Datei</span>' : '') + '</div>';
+  }
+
+  // A folder with a single subfolder and no files of its own shows as one row, as on GitHub.
+  function treeRows(node, path, depth) {
+    var html = '', names = dirNames(node);
+    for (var d = 0; d < names.length; d++) {
+      var label = names[d], child = node.dirs[names[d]], full = path + names[d] + '/';
+      while (!child.files.length && dirNames(child).length === 1) {
+        var only = dirNames(child)[0];
+        label += '/' + only;
+        full += only + '/';
+        child = child.dirs[only];
+      }
+      var closed = !!collapsed[full];
+      html += '<div class="tree-row dir" data-dir="' + full + '" style="padding-left:' + (10 + depth * 18) + 'px">' + (closed ? '&#9656; ' : '&#9662; ') + escape(label) + '</div>';
+      if (!closed) html += treeRows(child, full, depth + 1);
+    }
+    for (var f = 0; f < node.files.length; f++) html += fileRow(node.files[f], depth);
+    return html;
+  }
+
+  function plainRows(kind, test) {
+    var html = '';
+    for (var i = 0; i < R.docs.length; i++) {
+      var dd = R.docs[i];
+      if (!test(dd)) continue;
+      var n = marksIn(dd.id);
+      html += '<div class="tree-row' + (i === cur ? ' cur' : '') + '" data-doc="' + i + '">' + escape(dd.path || dd.title) +
+        (n ? ' <span class="count">&middot; ' + n + ' Mark.</span>' : '') + '</div>';
+    }
+    return html ? '<div class="section">' + kind + '</div>' + html : '';
+  }
+
   function button(label, attrs, cls) {
     return '<button type="button" ' + attrs + (cls ? ' class="' + cls + '"' : '') + '>' + label + '</button>';
   }
 
-  function docButton(i, label) {
-    var n = marksIn(R.docs[i].id);
-    return button(label + (n ? ' <span class="count">&middot; ' + n + '</span>' : ''), 'data-doc="' + i + '"', i === cur ? 'cur' : '');
-  }
+  function drawerWidth() { return Math.min(560, W - 90); }
 
   function openFiles() {
-    var html = '<div id="filesInner"><h2>' + R.title + '</h2><p class="meta">Runde ' + R.round + ' &middot; ' + marks.length + ' Markierungen</p>';
+    var html = '<h2>' + escape(R.title) + '</h2><p class="meta">Runde ' + R.round + ' &middot; ' + marks.length + ' Markierungen</p>';
     var toFile = doc().kind === 'diff' ? counterpart('file') : -1, toDiff = doc().kind === 'file' ? counterpart('diff') : -1;
     if (toFile >= 0) html += button('Ganze Datei an dieser Stelle &rarr;', 'data-jump="' + toFile + '"', 'wide jump');
     if (toDiff >= 0) html += button('Zum Diff an dieser Stelle &rarr;', 'data-jump="' + toDiff + '"', 'wide jump');
-    var lastDir = null, seen = {};
-    for (var i = 0; i < R.docs.length; i++) {
-      var dd = R.docs[i];
-      if (seen[i]) continue;
-      if (!dd.path) { html += '<div class="row">' + docButton(i, dd.title) + '</div>'; continue; }
-      var dir = dd.path.indexOf('/') >= 0 ? dd.path.substring(0, dd.path.lastIndexOf('/')) : '';
-      if (dir !== lastDir) { if (dir || lastDir !== null) html += '<div class="dir">' + (dir || '/') + '</div>'; lastDir = dir; }
-      var row = docButton(i, dd.title + (dd.added ? ' (nachgeliefert)' : '') + (dd.kind !== 'spec' ? ' &middot; ' + KIND_LABEL[dd.kind] : ''));
-      for (var j = i + 1; j < R.docs.length; j++) {
-        if (R.docs[j].path === dd.path) { row += docButton(j, KIND_LABEL[R.docs[j].kind]); seen[j] = true; }
-      }
-      html += '<div class="row">' + row + '</div>';
-    }
+    html += plainRows('Antworten', function (dd) { return dd.kind === 'replies'; });
+    html += plainRows('Dokumente', function (dd) { return !dd.context && (dd.kind === 'spec' || (dd.kind === 'file' && !hasDiff(dd.path))); });
+    var tree = treeRows(changeTree(), '', 0);
+    if (tree) html += '<div class="section">Ge&auml;nderte Dateien</div>' + tree;
+    html += plainRows('Nachgeliefert', function (dd) { return dd.context; });
     html += button('An den Agenten senden (' + marks.length + ')', 'data-act="send"', 'wide send');
-    html += button('Zur&uuml;ck', 'data-act="back"', 'wide');
     html += button('Alle Reviews', 'data-act="inbox"', 'wide');
     if (window.eeeApp) html += button('App beenden', 'data-act="quit"', 'wide');
-    filesView.innerHTML = html + '</div>';
-    place(filesView, 0, 0, W, H - TOOLBAR_H);
-    filesView.style.overflowY = 'auto';
-    var buttons = filesView.getElementsByTagName('button');
-    for (var b = 0; b < buttons.length; b++) buttons[b].onclick = onFileButton;
+    filesView.innerHTML = html;
+    place(filesView, 0, 0, drawerWidth(), H - TOOLBAR_H);
+    place(el('shade'), drawerWidth(), 0, W - drawerWidth(), H - TOOLBAR_H);
   }
 
-  function onFileButton() {
-    var act = this.getAttribute('data-act'), jump = this.getAttribute('data-jump'), to = this.getAttribute('data-doc');
+  function hasDiff(path) { for (var i = 0; i < R.docs.length; i++) if (R.docs[i].kind === 'diff' && R.docs[i].path === path) return true; return false; }
+
+  function closeFiles() {
+    filesView.style.display = 'none';
+    el('shade').style.display = 'none';
+  }
+
+  function saveThenQuit() {
+    if (!saveTimer) { window.eeeApp.quit(); return; }
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    post('/api/r/' + R.id + '/draft', { marks: packMarks() }, function () { window.eeeApp.quit(); });
+  }
+
+  filesView.onclick = function (e) {
+    var t = e.target;
+    while (t && t !== filesView && !t.getAttribute('data-doc') && !t.getAttribute('data-dir') && !t.getAttribute('data-act') && !t.getAttribute('data-jump')) t = t.parentNode;
+    if (!t || t === filesView) return;
+    var act = t.getAttribute('data-act'), jump = t.getAttribute('data-jump'), dir = t.getAttribute('data-dir'), to = t.getAttribute('data-doc');
     if (act === 'send') return submit();
     if (act === 'inbox') { window.location.href = '/'; return; }
-    if (act === 'quit') { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; post('/api/r/' + R.id + '/draft', { marks: packMarks() }, function () { window.eeeApp.quit(); }); } else window.eeeApp.quit(); return; }
-    if (act === 'back') { filesView.style.display = 'none'; return; }
-    if (jump !== null) { go(Number(jump), lineAtView()); return; }
-    go(Number(to));
+    if (act === 'quit') return saveThenQuit();
+    if (jump) return go(Number(jump), lineAtView());
+    if (dir) { collapsed[dir] = !collapsed[dir]; openFiles(); return; }
+    if (to) go(Number(to));
+  };
+
+  // In a whole-file view the arrows step to the neighbouring files' whole views.
+  function step(dir) {
+    var order = diffOrder(changeTree(), []), path = doc().path, at = -1;
+    for (var i = 0; i < order.length; i++) if (R.docs[order[i]].path === path) at = i;
+    var next = order[at + dir];
+    if (next === undefined) return;
+    if (doc().kind === 'file') {
+      for (var j = 0; j < R.docs.length; j++) if (R.docs[j].kind === 'file' && R.docs[j].path === R.docs[next].path) { go(j); return; }
+    }
+    go(next);
   }
 
   // ── Wiring ──────────────────────────────────────────────────────────────
@@ -682,7 +772,11 @@
   el('toolEraser').onclick = function () { setTool('eraser'); };
   el('toolHand').onclick = function () { setTool('hand'); };
   el('undo').onclick = undo;
-  el('filesBtn').onclick = function () { if (filesView.style.display === 'block') filesView.style.display = 'none'; else openFiles(); };
+  el('filesBtn').onclick = function () { if (filesView.style.display === 'block') closeFiles(); else openFiles(); };
+  el('shade').onclick = closeFiles;
+  el('prevDoc').onclick = function () { step(-1); };
+  el('nextDoc').onclick = function () { step(1); };
+  if (R.kind !== 'code') { el('prevDoc').style.display = 'none'; el('nextDoc').style.display = 'none'; }
   el('noteClose').onclick = closeNote;
   el('askAgent').onclick = ask;
   var stampButtons = noteBar.getElementsByTagName('button');
@@ -714,10 +808,18 @@
     marks.push({ id: saved.id, doc: saved.doc, ink: unpackStrokes(saved.ink), note: unpackStrokes(saved.note), noteScroll: saved.noteScroll || 0, rows: saved.rows, stamp: saved.stamp || null, asked: !!saved.asked });
   }
 
+  // A code review opens on the first changed file as the tree lists it, unless the agent's
+  // replies lead the round.
+  function firstDocument() {
+    if (R.kind !== 'code' || R.docs[0].kind === 'replies') return 0;
+    var order = diffOrder(changeTree(), []);
+    return order.length ? order[0] : 0;
+  }
+
   viewport();
   docW = W - RAIL_W;
   docLayer.style.width = docW + 'px';
-  showDocument(0);
+  showDocument(firstDocument());
   layout();
   timed('draw saved ink', function () { for (var di = 0; di < R.docs.length; di++) redrawDocInk(di); });
   redrawRail();

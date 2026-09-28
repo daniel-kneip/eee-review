@@ -94,7 +94,16 @@ export class Store extends EventEmitter {
     if (review.kind === 'code') {
       for (const file of changedFiles(review.repo, review.base, review.head)) {
         const changed = new Set(file.hunks.flatMap((h) => h.lines.filter((l) => l.kind === 'add').map((l) => l.new)));
-        docs.push({ kind: 'diff', path: file.path, title: path.basename(file.path), ...renderDiff(file) });
+        const lines = file.hunks.flatMap((h) => h.lines);
+        docs.push({
+          kind: 'diff',
+          path: file.path,
+          title: path.basename(file.path),
+          status: file.untracked ? 'A' : file.status,
+          plus: lines.filter((l) => l.kind === 'add').length,
+          minus: lines.filter((l) => l.kind === 'del').length,
+          ...renderDiff(file),
+        });
         if (file.content !== null) {
           docs.push({
             kind: 'file',

@@ -94,7 +94,10 @@ function reviewPage(store, review) {
       kind: d.kind,
       title: d.title,
       path: d.path,
-      added: !!d.added,
+      context: !!d.added,
+      status: d.status ?? null,
+      plus: d.plus ?? null,
+      minus: d.minus ?? null,
       rowNew: d.rows.map((r) => r.new ?? (r.lines ? r.lines[0] : 0)),
     })),
     marks: store.draft(review.id, review.round).marks,
@@ -111,7 +114,8 @@ function reviewPage(store, review) {
 <button type="button" data-stamp="ok">OK</button><button type="button" data-stamp="no">Nein</button><button type="button" data-stamp="ask">?</button>
 <button type="button" id="askAgent">Frage</button><button type="button" id="noteClose">Schlie&szlig;en</button></div>
 <div class="pane" id="notePane"><div id="noteLayer"></div></div>
-<div class="bar" id="toolBar"><button type="button" id="filesBtn">Dateien</button><button type="button" id="toolPen" class="on">Stift</button><button type="button" id="toolEraser">Radierer</button><button type="button" id="toolHand">Hand</button><button type="button" id="undo">&#8630;</button><span id="status"></span></div>
+<div class="bar" id="toolBar"><button type="button" id="filesBtn">Dateien</button><button type="button" id="toolPen" class="on">Stift</button><button type="button" id="toolEraser">Radierer</button><button type="button" id="toolHand">Hand</button><button type="button" id="undo">&#8630;</button><button type="button" id="prevDoc">&#9664;</button><button type="button" id="nextDoc">&#9654;</button><span id="status"></span></div>
+<div id="shade"></div>
 <div id="files"></div>
 <div id="store" style="display:none">${store_}</div>
 <script type="text/javascript">var REVIEW = ${JSON.stringify(client)};</script>
