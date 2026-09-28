@@ -14,6 +14,10 @@
 // buffers hold about 64 KB, and drops what does not fit. So the tablet ACKs the bytes it has
 // read (channel 0, a u32 BE count), and the Mac keeps at most WINDOW bytes unacknowledged.
 //
+// The cable comes and goes without the tablet's tty noticing, so the Mac starts every link
+// with RESET, which drops the tablet's channels from before, and the tablet gives a link up
+// when a packet does not go out within LINK_TIMEOUT.
+//
 //   tablet:  eeelink [listen-port:remote-port ...]      default 8770:8770  (app -> hub)
 //   mac:     eeelink [listen-port:remote-port ...]      default 2323:23    (telnet over USB)
 //
@@ -38,7 +42,7 @@
 #include <pthread.h>
 #endif
 
-enum { OPEN = 1, DATA = 2, CLOSE = 3, ACK = 4 };
+enum { OPEN = 1, DATA = 2, CLOSE = 3, ACK = 4, RESET = 5 };
 #define MAGIC 0xEE
 #define MAX_CHANNELS 64
 #define MAX_FORWARDS 8
@@ -57,6 +61,8 @@ static int next_channel = 1;
 static int in_flight = 0;   // Mac: bytes sent that the tablet has not ACKed yet
 static int unacked = 0;     // tablet: bytes read that it has not ACKed yet
 
+static int link_dead = 0;    // a write to the other side failed; serve() gives the link up
+
 static int debug = 0;
 static void logf_(const char *msg, int a) { fprintf(stderr, "eeelink: %s %d\n", msg, a); }
 static void trace(const char *what, int id, int n) { if (debug) fprintf(stderr, "eeelink: %s channel %d, %d bytes\n", what, id, n); }
@@ -72,20 +78,20 @@ static volatile int reader_stop = 0;
 static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int link_open(void) {
+    // After a replug the list can still hold the device that went away next to the new one.
     libusb_device **list;
     ssize_t n = libusb_get_device_list(usb, &list);
-    libusb_device *found = NULL;
-    for (ssize_t i = 0; i < n; i++) {
+    int ok = 0;
+    for (ssize_t i = 0; i < n && !ok; i++) {
         struct libusb_device_descriptor d;
         libusb_get_device_descriptor(list[i], &d);
-        if (d.idVendor == 0x0525 && d.idProduct == 0xa4a6) found = list[i];
+        ok = d.idVendor == 0x0525 && d.idProduct == 0xa4a6 && libusb_open(list[i], &dev) == 0;
     }
-    int ok = found && libusb_open(found, &dev) == 0;
     libusb_free_device_list(list, 1);
     if (!ok) return -1;
     libusb_set_configuration(dev, 1);
     struct libusb_config_descriptor *c;
-    if (libusb_get_active_config_descriptor(libusb_get_device(dev), &c)) return -1;
+    if (libusb_get_active_config_descriptor(libusb_get_device(dev), &c)) { libusb_close(dev); return -1; }
     int iface = -1;
     for (int i = 0; i < c->bNumInterfaces; i++) {
         const struct libusb_interface_descriptor *a = &c->interface[i].altsetting[0];
@@ -97,7 +103,14 @@ static int link_open(void) {
         }
     }
     libusb_free_config_descriptor(c);
-    if (iface < 0 || libusb_claim_interface(dev, iface)) return -1;
+    int r = iface < 0 ? -1 : libusb_claim_interface(dev, iface);
+    static int last_error = 0;
+    if (r && r != last_error) logf_("cannot claim the device", r);
+    last_error = r;
+    if (r) {
+        libusb_close(dev);
+        return -1;
+    }
     return 0;
 }
 
@@ -123,7 +136,7 @@ static int link_write(const unsigned char *buf, int len) {
         int sent = 0;
         int r = libusb_bulk_transfer(dev, ep_out, (unsigned char *)buf + off, len - off, &sent, 5000);
         off += sent;
-        if (r != 0) { pthread_mutex_unlock(&write_lock); return -1; }
+        if (r != 0) { pthread_mutex_unlock(&write_lock); link_dead = 1; return -1; }
     }
     pthread_mutex_unlock(&write_lock);
     return 0;
@@ -148,20 +161,28 @@ static int link_read_fd(void) { return tty; }
 // the tablet writes one full-speed packet at a time and waits for it to go out before the next.
 #define PACKET 64
 
+#define LINK_TIMEOUT 3
+
+// SIGALRM interrupts a write or tcdrain that waits for a Mac that is gone.
+static volatile sig_atomic_t timed_out = 0;
+static void on_alarm(int sig) { (void)sig; timed_out = 1; }
+
 static int link_write(const unsigned char *buf, int len) {
     int off = 0;
-    while (off < len) {
+    while (off < len && !link_dead) {
+        timed_out = 0;
+        alarm(LINK_TIMEOUT);
         int n = write(tty, buf + off, len - off < PACKET ? len - off : PACKET);
-        if (n < 0) { if (errno == EINTR || errno == EAGAIN) continue; return -1; }
-        tcdrain(tty);
-        off += n;
+        if (n > 0 && tcdrain(tty) == 0) off += n;
+        else if (timed_out || (n < 0 && errno != EINTR && errno != EAGAIN)) link_dead = 1;
+        alarm(0);
     }
-    return 0;
+    return link_dead ? -1 : 0;
 }
 #endif
 
 static int send_frame(int type, int id, const unsigned char *payload, int len) {
-    trace(type == OPEN ? "send OPEN" : type == DATA ? "send DATA" : "send CLOSE", id, len);
+    trace(type == OPEN ? "send OPEN" : type == DATA ? "send DATA" : type == CLOSE ? "send CLOSE" : "send control", id, len);
     unsigned char frame[6 + MAX_PAYLOAD] = { MAGIC, (unsigned char)type, (unsigned char)(id >> 8), (unsigned char)id,
                                              (unsigned char)(len >> 8), (unsigned char)len };
     if (len) memcpy(frame + 6, payload, len);
@@ -240,6 +261,9 @@ static void handle_frame(int type, int id, const unsigned char *p, int len) {
         }
     } else if (type == CLOSE) {
         drop(find(id), 0);
+    } else if (type == RESET) {
+        for (int i = 0; i < MAX_CHANNELS; i++) drop(&channels[i], 0);
+        unacked = 0;
     } else if (type == ACK && len == 4) {
         in_flight -= (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
         if (in_flight < 0) in_flight = 0;
@@ -276,7 +300,7 @@ static int pump_link(void) {
 
 static void serve(void) {
     for (int i = 0; i < MAX_CHANNELS; i++) channels[i].fd = -1;
-    for (;;) {
+    while (!link_dead) {
         fd_set rd;
         FD_ZERO(&rd);
         int top = link_read_fd();
@@ -322,10 +346,17 @@ static void reset_channels(void) {
     inlen = 0;
     in_flight = 0;
     unacked = 0;
+    link_dead = 0;
 }
 
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+#ifndef EEELINK_HOST
+    struct sigaction alarm_action;
+    memset(&alarm_action, 0, sizeof alarm_action);
+    alarm_action.sa_handler = on_alarm;
+    sigaction(SIGALRM, &alarm_action, NULL);
+#endif
     debug = getenv("EEELINK_DEBUG") != NULL;
 #ifdef EEELINK_HOST
     const char *defaults[] = { "2323:23" };
@@ -354,6 +385,8 @@ int main(int argc, char **argv) {
         reader_stop = 0;
         pthread_t reader;
         pthread_create(&reader, NULL, usb_reader, NULL);
+        send_frame(RESET, 0, NULL, 0);
+        in_flight = 0;
         serve();
         reader_stop = 1;
         pthread_join(reader, NULL);
@@ -361,6 +394,7 @@ int main(int argc, char **argv) {
         close(link_pipe[0]);
 #else
         serve();
+        tcflush(tty, TCIOFLUSH);
         close(tty);
 #endif
         reset_channels();

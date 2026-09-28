@@ -74,8 +74,10 @@ async function deploy(host) {
   );
   if (lan) await run(`echo ${lan} > ${dir}/hub-wifi`);
   await installLauncherEntry(run, hubUrl);
-  await run(`${dir}/start.sh`, 5000);
   await run('cat /tmp/eeereview.log /tmp/eeelink.log; pidof eeereview eeelink');
+  // The new eeelink replaces the running one. Over the cable that ends this session, which the
+  // old one carries, so the restart runs detached and the session is not waited on.
+  await run(`(trap '' HUP; sleep 1; killall eeelink eeereview; ${dir}/start.sh) </dev/null >/dev/null 2>&1 &`, 1500);
   session.close();
 }
 

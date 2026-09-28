@@ -88,7 +88,7 @@ class Mirror : public QObject {
     Q_OBJECT
 public:
     Mirror(const QStringList &urls, const QString &dir)
-        : urls(urls), dir(dir + "/"), state("probing"), tried(0), attempts(0), firstProbe(true), pushing(0), syncing(0),
+        : urls(urls), dir(dir + "/"), state("probing"), tried(0), attempts(0), firstProbe(true), pinging(false), pushing(0), syncing(0),
           syncPaused(false), lastSeq(0) {
         connect(&net, SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
         connect(&refreshTimer, SIGNAL(timeout()), this, SLOT(refresh()));
@@ -179,6 +179,13 @@ public slots:
         setState("probing");
         probe();
     }
+    // Looks for the hub again now, not when the next try is due.
+    void reconnect() {
+        if (online() || pinging) return;
+        reprobeTimer.stop();
+        setState("probing");
+        reprobe();
+    }
     void refresh() {
         if (!online()) return;
         QNetworkReply *reply = request(hub + "api/inbox", 5000);
@@ -187,6 +194,7 @@ public slots:
 
 private slots:
     void probe() {
+        pinging = true;
         QNetworkReply *reply = request(urls[tried] + "api/ping", tried == 0 ? 2000 : 4000);
         reply->setProperty("kind", "ping");
     }
@@ -209,6 +217,7 @@ private slots:
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         bool ok = reply->error() == QNetworkReply::NoError;
         if (kind == "ping") {
+            pinging = false;
             if (ok) {
                 hub = urls[tried];
                 fprintf(stderr, "mirror: hub at %s\n", qPrintable(hub));
@@ -415,7 +424,7 @@ private:
     QStringList urls;
     QString dir, hub, state;
     int tried, attempts;
-    bool firstProbe;
+    bool firstProbe, pinging;
     QNetworkAccessManager net;
     QTimer refreshTimer, reprobeTimer;
     QVariantList items;

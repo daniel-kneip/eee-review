@@ -92,6 +92,7 @@ protected:
         p.translate(0, -scrollY);
         p.drawText(QRect(16, 12, width() - 200, 50), Qt::AlignLeft | Qt::AlignVCenter, "Reviews");
         paintButton(p, quitRect(), "Beenden", false, 20);
+        if (mirror->connection() == "offline") paintButton(p, connectRect(), "Verbinden", false, 20);
         paintConnection(p);
         QVariantList items = mirror->inbox();
         if (items.isEmpty()) {
@@ -148,10 +149,12 @@ private:
         f.setPixelSize(18);
         p.setFont(f);
         p.setPen(QColor(0x44, 0x44, 0x44));
-        p.drawText(QRect(170, 12, width() - 340, 50), Qt::AlignRight | Qt::AlignVCenter, text);
+        int right = mirror->connection() == "offline" ? connectRect().left() : quitRect().left();
+        p.drawText(QRect(170, 12, right - 16 - 170, 50), Qt::AlignRight | Qt::AlignVCenter, text);
         p.setPen(Qt::black);
     }
     QRect quitRect() const { return state() == "unreachable" ? QRect(230, 240, 170, 56) : QRect(width() - 150, 16, 134, 44); }
+    QRect connectRect() const { return QRect(width() - 300, 16, 134, 44); }
     QRect retryRect() const { return QRect(40, 240, 170, 56); }
     QRect itemRect(int i) const { return QRect(16, 76 + i * 104, width() - 32, 92); }
 
@@ -174,6 +177,10 @@ private:
         QPoint p = at + QPoint(0, scrollY);
         if (quitRect().contains(p)) {
             qApp->quit();
+            return;
+        }
+        if (mirror->connection() == "offline" && connectRect().contains(p)) {
+            mirror->reconnect();
             return;
         }
         QVariantList items = mirror->inbox();
