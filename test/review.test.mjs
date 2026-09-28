@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -80,13 +81,13 @@ test('strokes rasterise to a grayscale png with ink where the pen went', () => {
 test('a code review of the files asked for goes to the tablet as pages and markup, comes back with located marks, and returns as the next round', async () => {
   const repo = tempRepo();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'eee-home-'));
-  const { server } = await startHub({ port: 0, home, log: () => {} });
+  const { server, token } = await startHub({ port: 0, home, log: () => {} });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, route, body) =>
     (
       await fetch(base + route, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-EEE-Token': token },
         body: body && JSON.stringify(body),
       })
     ).json();
@@ -114,7 +115,7 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     const strip = Buffer.from(await (await fetch(`${base}/r/${review.id}/1/pages/0/0.png`)).arrayBuffer());
     assert.ok(strip.subarray(1, 4).equals(Buffer.from('PNG')));
     const [, addedBottom] = rendered.rows.find(([, , row]) => row === added);
-    const waiting = fetch(`${base}/api/agent/wait/${review.id}?timeout=30`).then((r) => r.json());
+    const waiting = fetch(`${base}/api/agent/wait/${review.id}?timeout=30`, { headers: { 'X-EEE-Token': token } }).then((r) => r.json());
     const submitted = {
       round: 1,
       marks: [
@@ -149,7 +150,7 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     const again = await call('GET', `/api/agent/wait/${review.id}?timeout=1`);
     assert.equal(again.again, true, 'an unanswered round comes again, in case the agent never got it');
     assert.equal(again.marks.length, 2, 'and a resent submit did not change it');
-    const late = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', body: JSON.stringify({ round: 1, marks: [] }) });
+    const late = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ round: 1, marks: [] }) });
     assert.equal(late.status, 409, 'a submitted round takes no more changes');
 
     const { review: next } = await call('POST', `/api/agent/respond/${review.id}`, {
@@ -159,7 +160,7 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     const round2 = await (await fetch(`${base}/r/${review.id}`)).text();
     assert.match(round2, /Removed the log call\./);
     assert.match(round2, new RegExp(`/r/${review.id}/note/1/m1`));
-    const stale = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', body: JSON.stringify({ round: 1, marks: [] }) });
+    const stale = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ round: 1, marks: [] }) });
     assert.equal(stale.status, 409, 'a draft queued for the last round is refused');
     assert.equal((await fetch(`${base}/r/${review.id}/1/pages/2/index.json`)).status, 404, 'a past round is not rendered anew');
 
@@ -184,10 +185,10 @@ test('a pull request comes with its details and comments, shows only what its br
   fs.writeFileSync(path.join(repo, 'spec.md'), '# Plan\n\nRotate tokens.\n\nKeep the old ones a day.\n');
   git('commit', '-qam', 'meanwhile on main');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'eee-home-'));
-  const { server } = await startHub({ port: 0, home, log: () => {} });
+  const { server, token } = await startHub({ port: 0, home, log: () => {} });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, route, body) =>
-    (await fetch(base + route, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) })).json();
+    (await fetch(base + route, { method, headers: { 'Content-Type': 'application/json', 'X-EEE-Token': token }, body: body && JSON.stringify(body) })).json();
 
   try {
     const { review } = await call('POST', '/api/agent/create', {
@@ -226,6 +227,34 @@ test('a pull request comes with its details and comments, shows only what its br
     const feedback = await call('GET', `/api/agent/wait/${review.id}?timeout=5`);
     assert.equal(feedback.marks[0].where, 'auth.js (Diff, Zeile 2)');
     assert.equal(feedback.marks[0].text, '[Kommentar 42 von Anna zu auth.js:2] Is logging ids fine here?\n  Antwort von Ben: Only in dev.');
+  } finally {
+    server.close();
+  }
+});
+
+test('the hub answers neither web pages elsewhere nor callers without its token, and reads no file outside the repository', async () => {
+  const repo = tempRepo();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'eee-home-'));
+  const { server, token } = await startHub({ port: 0, home, log: () => {} });
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+  const create = (body, headers) =>
+    fetch(`${base}/api/agent/create`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-EEE-Token': token, ...headers }, body: JSON.stringify(body) });
+
+  try {
+    assert.equal((await create({ title: 't', kind: 'spec', repo, files: ['spec.md'] }, { 'X-EEE-Token': 'guess' })).status, 403, 'agent API without the token');
+    const simple = await fetch(`${base}/api/agent/create`, { method: 'POST', headers: { 'Content-Type': 'text/plain', 'X-EEE-Token': token }, body: '{}' });
+    assert.equal(simple.status, 415, 'a post a web page could send without a preflight');
+    const rebound = await new Promise((resolve) =>
+      http.get({ host: '127.0.0.1', port, path: '/api/inbox', headers: { Host: `evil.example:${port}` } }, (res) => resolve(res.statusCode)),
+    );
+    assert.equal(rebound, 403, 'a name other than localhost, as DNS rebinding brings');
+    fs.symlinkSync(os.homedir(), path.join(repo, 'home'));
+    for (const file of ['../outside.md', 'home/.profile']) {
+      const res = await create({ title: 't', kind: 'spec', repo, files: [file] });
+      assert.match((await res.json()).error ?? '', /outside the repository/, file);
+    }
+    assert.equal((await create({ title: 't', kind: 'spec', repo, files: ['spec.md'] })).status, 200);
   } finally {
     server.close();
   }

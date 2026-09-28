@@ -37,9 +37,15 @@ export function changedFiles(repo, base = 'HEAD', head = null) {
   }));
 }
 
+// Only files inside the repository, also through symlinks: an agent's paths reach the tablet.
 export function fileAt(repo, file, rev = null) {
+  const root = fs.realpathSync(repo);
+  const inside = (full) => full === root || full.startsWith(root + path.sep);
+  if (!inside(path.resolve(root, file))) throw new Error(`${file} is outside the repository`);
   if (rev) return git(repo, 'show', `${rev}:${file}`);
-  return fs.readFileSync(path.join(repo, file), 'utf8');
+  const real = fs.realpathSync(path.join(root, file));
+  if (!inside(real)) throw new Error(`${file} is outside the repository`);
+  return fs.readFileSync(real, 'utf8');
 }
 
 function addedHunks(content) {

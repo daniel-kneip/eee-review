@@ -88,8 +88,8 @@ private:
 class Mirror : public QObject {
     Q_OBJECT
 public:
-    Mirror(const QStringList &urls, const QString &dir)
-        : urls(urls), dir(dir + "/"), state("probing"), tried(0), attempts(0), firstProbe(true), pinging(false), pushing(0), syncing(0),
+    Mirror(const QStringList &urls, const QString &dir, const QByteArray &token)
+        : urls(urls), token(token), dir(dir + "/"), state("probing"), tried(0), attempts(0), firstProbe(true), pinging(false), pushing(0), syncing(0),
           syncPaused(false), lastSeq(0) {
         connect(&net, SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
         connect(&refreshTimer, SIGNAL(timeout()), this, SLOT(refresh()));
@@ -297,6 +297,7 @@ private:
 
     QNetworkReply *request(const QString &url, int timeout, const QByteArray *body = 0) {
         QNetworkRequest req((QUrl(url)));
+        req.setRawHeader("X-EEE-Token", token);
         QNetworkReply *reply;
         if (body) {
             req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -433,6 +434,7 @@ private:
     }
 
     QStringList urls;
+    QByteArray token;
     QString dir, hub, state;
     int tried, attempts;
     bool firstProbe, pinging;

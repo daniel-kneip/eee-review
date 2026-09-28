@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -8,7 +10,7 @@ import { escapeHtml } from '../render/highlight.mjs';
 import { PAGE_WIDTH, PageRenderer } from '../render/pages.mjs';
 import { rowsUnderInk } from './rows.mjs';
 import { iconPng } from '../tablet/icon.mjs';
-import { Store } from './store.mjs';
+import { defaultHome, Store } from './store.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const DEFAULT_PORT = Number(process.env.EEE_REVIEW_PORT ?? 8770);
@@ -69,6 +71,26 @@ function readBody(req) {
     });
   });
 }
+
+// The hub's secret: the agent's MCP server sends it with every call, and deploy leaves it on
+// the tablet, whose requests over Wi-Fi carry it. Local requests need it only for the agent API.
+export function hubToken(home = defaultHome()) {
+  const file = path.join(home, 'token');
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(file, crypto.randomBytes(18).toString('base64url'), { mode: 0o600, flag: 'wx' });
+  }
+  return fs.readFileSync(file, 'utf8').trim();
+}
+
+// A web page elsewhere cannot use the hub through the browser: names other than localhost
+// (DNS rebinding) are refused, and posts must be JSON, which a page cannot send cross-site
+// without a preflight the hub never allows.
+function hostAllowed(req) {
+  const host = (req.headers.host ?? '').replace(/:\d+$/, '').replace(/^\[(.*)\]$/, '$1');
+  return host === 'localhost' || net.isIP(host) !== 0;
+}
+const cookieToken = (req) => (req.headers.cookie ?? '').match(/(?:^|;\s*)eee=([^;]+)/)?.[1];
 
 const isLocal = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
 
@@ -172,6 +194,7 @@ function pendingForAgent(store, pending) {
 
 export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) {
   const store = new Store(home);
+  const token = hubToken(store.home);
   const renderer = new PageRenderer();
   const self = () => `http://127.0.0.1:${server.address().port}`;
 
@@ -218,8 +241,18 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
     const p = url.pathname;
     let m;
     if (process.env.EEE_REVIEW_DEBUG) log(req.method, p, 'from', req.socket.remoteAddress, req.headers['accept-encoding'] ?? '-');
+    if (!hostAllowed(req)) return json(req, res, { error: 'unknown host' }, 403);
+    if (req.method === 'POST' && !/^application\/json\b/.test(req.headers['content-type'] ?? ''))
+      return json(req, res, { error: 'posts must be application/json' }, 415);
+    const presented = req.headers['x-eee-token'] ?? url.searchParams.get('token') ?? cookieToken(req);
+    const knows = presented === token;
+    // A browser that brought the token once keeps it as a cookie.
+    if (url.searchParams.get('token') === token) res.setHeader('Set-Cookie', `eee=${token}; HttpOnly; SameSite=Strict; Path=/`);
     try {
       if (req.method === 'GET' && p === '/api/ping') return json(req, res, { ok: true });
+      if (p.startsWith('/api/agent/')) {
+        if (!isLocal(req) || !knows) return json(req, res, { error: 'the agent API needs the hub token, from this machine' }, 403);
+      } else if (!isLocal(req) && !knows) return json(req, res, { error: 'the hub token is missing' }, 401);
       if (req.method === 'GET' && p === '/') return send(req, res, inboxPage(store));
       if (req.method === 'GET' && p === '/api/inbox') {
         const open = store.list().filter((r) => r.status !== 'closed');
@@ -284,7 +317,6 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       }
 
       if (p.startsWith('/api/agent/')) {
-        if (!isLocal(req)) return json(req, res, { error: 'agent API is local only' }, 403);
         if (req.method === 'GET' && p === '/api/agent/list') return json(req, res, store.list());
         if (req.method === 'POST' && p === '/api/agent/create') {
           const review = await store.create(await readBody(req));
@@ -341,7 +373,7 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, BIND, () => resolve({ server, store, urls: BIND === '0.0.0.0' ? lanUrls(port) : [] }));
+    server.listen(port, BIND, () => resolve({ server, store, token, urls: BIND === '0.0.0.0' ? lanUrls(port) : [] }));
   });
 }
 

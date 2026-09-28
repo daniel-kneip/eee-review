@@ -78,6 +78,22 @@ stehen als Kasten unter ihrer Zeile, samt Thread. Eine Markierung auf einem Komm
 Agenten, welchen Kommentar du meinst. Kommentare in den PR schreibt er erst, wenn du es sagst
 und seine Entwürfe freigegeben hast. Eigene Hinweise im Code kann der Agent genauso mitschicken.
 
+## Sicherheit
+
+Der Hub erzeugt beim ersten Start einen Token in `~/.eee-review/token`.
+- **Agent-API:** Der MCP-Server schickt den Token bei jedem Aufruf mit, und die Agent-API
+  nimmt nur Aufrufe von diesem Rechner an.
+- **Tablet:** `deploy` legt den Token nach `/eTablet/eee-review/hub-token`, und die App
+  schickt ihn bei jeder Anfrage mit.
+- **Browser:** Ein Browser auf einem anderen Gerät öffnet die Eingangsliste einmal mit
+  `?token=…`. Danach hält ein Cookie den Token.
+- **Ohne Token:** Übers Kabel kommt die App ohne ihn aus, denn Anfragen von diesem Rechner
+  gelten als lokal. Übers WLAN antwortet der Hub ohne Token nicht.
+
+Andere Hostnamen als `localhost` lehnt der Hub ab, das verhindert DNS-Rebinding. POST-Anfragen
+müssen JSON sein, damit fremde Webseiten sie nicht absetzen können. Dateien liest er nur
+innerhalb des Repositorys, auch über Symlinks hinweg nicht außerhalb.
+
 ## Ohne Laptop
 
 Solange der Hub erreichbar ist, lädt die App alle offenen Reviews samt Seiten nach

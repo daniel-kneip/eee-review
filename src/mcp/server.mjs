@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { DEFAULT_PORT, lanUrls } from '../hub/server.mjs';
+import { DEFAULT_PORT, hubToken, lanUrls } from '../hub/server.mjs';
 
 const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cli.mjs');
 const hub = `http://127.0.0.1:${DEFAULT_PORT}`;
@@ -13,7 +13,7 @@ const STAMPS = { ok: 'OK', no: 'Nein', ask: '? unklar' };
 async function call(method, route, body) {
   const res = await fetch(hub + route, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: { 'X-EEE-Token': hubToken(), ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const value = await res.json();

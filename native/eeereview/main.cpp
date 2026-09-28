@@ -57,12 +57,18 @@ private slots:
     }
 };
 
+// deploy leaves the hub's token here; requests over Wi-Fi need it.
+static QByteArray hubToken() {
+    QFile file("/eTablet/eee-review/hub-token");
+    return file.open(QIODevice::ReadOnly) ? file.readAll().trimmed() : QByteArray();
+}
+
 // Hands the pen to whichever view is up, and swaps the inbox for a review and back.
 class Shell : public QObject {
     Q_OBJECT
 public:
     Shell(const QStringList &urls, const QRect &geometry)
-        : mirror(urls, "/eTablet/eee-review/cache"), inbox(&mirror), review(0), area(geometry) {
+        : mirror(urls, "/eTablet/eee-review/cache", hubToken()), inbox(&mirror), review(0), area(geometry) {
         inbox.setWindowFlags(Qt::FramelessWindowHint);
         inbox.setGeometry(area);
         connect(&inbox, SIGNAL(open(QString)), this, SLOT(openReview(QString)));

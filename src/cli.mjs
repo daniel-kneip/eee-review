@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_PORT, lanUrls, startHub } from './hub/server.mjs';
+import { DEFAULT_PORT, hubToken, lanUrls, startHub } from './hub/server.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const USB_TELNET = 2323;
@@ -20,8 +20,9 @@ const [command, ...args] = process.argv.slice(2);
 
 if (command === 'hub') {
   const log = (...parts) => console.log(new Date().toLocaleTimeString(), ...parts);
-  const { urls } = await startHub({ log });
+  const { urls, store } = await startHub({ log });
   console.log(`eee-review hub on port ${DEFAULT_PORT}. On the tablet: ${[...urls, 'USB cable'].join('  ')}`);
+  if (urls.length) console.log(`In a browser elsewhere: ${urls[0]}?token=<${path.join(store.home, 'token')}>`);
   startUsbLink(log);
 } else if (command === 'mcp') {
   const { startMcp } = await import('./mcp/server.mjs');
@@ -59,6 +60,7 @@ async function deploy(host) {
   const usb = await reachable('127.0.0.1', USB_TELNET);
   const lan = lanUrls(DEFAULT_PORT).find((u) => sameSubnet(u, host)) ?? lanUrls(DEFAULT_PORT)[0];
   const hubUrl = usb ? `http://127.0.0.1:${DEFAULT_PORT}/` : lan;
+  const token = hubToken();
   if (!hubUrl) throw new Error('no route to the tablet: no USB link and no network address');
   console.log(usb ? 'deploying through the USB cable' : `deploying over Wi-Fi to ${host}`);
   const dir = '/eTablet/eee-review';
@@ -67,13 +69,14 @@ async function deploy(host) {
   await run('root', 1500);
   await run('', 800);
   const fetch = (name) =>
-    `wget -q -O ${name}.new ${hubUrl}native/${name} && mv ${name}.new ${name} && chmod +x ${name}`;
+    `wget -q -O ${name}.new '${hubUrl}native/${name}?token=${token}' && mv ${name}.new ${name} && chmod +x ${name}`;
   await run(
     `mkdir -p ${dir} && cd ${dir} && ${fetch('start.sh')} && ${fetch('eeereview')} && ${fetch('eeelink')} && ls -l`,
     8000,
   );
   if (lan) await run(`echo ${lan} > ${dir}/hub-wifi`);
-  await installLauncherEntry(run, hubUrl);
+  await run(`echo ${token} > ${dir}/hub-token && chmod 600 ${dir}/hub-token`);
+  await installLauncherEntry(run, hubUrl, token);
   await run('cat /tmp/eeereview.log /tmp/eeelink.log; pidof eeereview eeelink');
   // The new eeelink replaces the running one. Over the cable that ends this session, which the
   // old one carries, so the restart runs detached and the session is not waited on.
@@ -87,7 +90,7 @@ async function deploy(host) {
 // refreshes. /usr is mounted read-only, so it is remounted writable for the
 // change and read-only again after. Config.xml is saved once as .orig
 // before the entry is added, and the entry only goes in when it is missing.
-async function installLauncherEntry(run, hubUrl) {
+async function installLauncherEntry(run, hubUrl, token) {
   const bin = '/usr/local/eTablet/bin/eeereview';
   const icons = '/usr/local/eTablet/bin/launcher/icon';
   const config = '/eTablet/etc/launcher/Config.xml';
@@ -100,8 +103,8 @@ async function installLauncherEntry(run, hubUrl) {
       `mkdir -p ${bin}`,
       `rm -f ${bin}/eeereview`,
       `ln -s /eTablet/eee-review/eeereview ${bin}/eeereview`,
-      `wget -q -O ${icons}/icon_b_eeereview.png ${hubUrl}native/icon_b_eeereview.png`,
-      `wget -q -O ${icons}/icon_s_eeereview.png ${hubUrl}native/icon_s_eeereview.png`,
+      `wget -q -O ${icons}/icon_b_eeereview.png '${hubUrl}native/icon_b_eeereview.png?token=${token}'`,
+      `wget -q -O ${icons}/icon_s_eeereview.png '${hubUrl}native/icon_s_eeereview.png?token=${token}'`,
       'sync',
       'mount -o remount,ro /usr',
     ].join('; '),
