@@ -69,6 +69,8 @@ When the user asks you to bring a pull request (Bitbucket, GitHub, ...) to the t
    - A mark on a colleague's comment becomes a reply in that thread, by its `ref`.
    - Post them once the user approves the drafts.
    - Write them in the user's voice and language, not as notes about the review.
+   - Keep each draft close to the user's note: their wording, their length, nothing added.
+     Details from the thread or the code that the note does not say stay out of the draft.
 
 
 Call `review_wait` right after creating the review. It returns when the user sends the round,
