@@ -209,6 +209,7 @@ function pendingForAgent(store, pending) {
     review: { id: review.id, title: review.title, kind: review.kind, round },
     requests: requests.map((r) => mark(r.mark, null)),
     marks: feedback ? feedback.marks.map((m, i) => mark(m, i + 1)) : [],
+    drafts: feedback ? store.draftVerdicts(review.id, round, feedback.marks) : [],
   };
 }
 

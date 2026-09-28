@@ -23,6 +23,31 @@ const newId = () => crypto.randomBytes(4).toString('hex');
 // A review is a folder: review.json, and per round the rendered documents, the tablet's
 // draft, what was submitted and any context requests. Each round's documents are rendered
 // once, when the round starts, so the tablet only ever fetches finished HTML.
+// PR comments the agent proposes, each a row of its own for the user to stamp. The document
+// counts as replies: it belongs to the round it answers, like the replies.
+function renderDrafts(drafts) {
+  const rows = [];
+  const items = drafts
+    .map((d, i) => {
+      const index = rows.push({ kind: 'draft', draft: i + 1, text: `[Entwurf ${i + 1}] ${d.text}` }) - 1;
+      const target = d.ref
+        ? `Antwort auf Kommentar ${d.ref}`
+        : d.file
+          ? `neu an ${d.file}${d.line ? `:${d.line}` : ''}`
+          : 'neuer Kommentar zum PR';
+      return `<div class="comment draft" data-row="${index}"><div class="at">Entwurf ${i + 1} · ${escapeHtml(target)}</div><div class="text">${escapeHtml(d.text)}</div></div>`;
+    })
+    .join('');
+  return {
+    kind: 'replies',
+    title: 'Kommentar-Entwürfe',
+    path: null,
+    drafts,
+    html: `<div class="doc spec replies"><h1>Kommentar-Entwürfe</h1><p>OK: so posten · Nein: verwerfen · Notiz: ändern. Ohne Markierung wird nichts gepostet.</p>${items}</div>`,
+    rows,
+  };
+}
+
 export class Store extends EventEmitter {
   constructor(home = defaultHome()) {
     super();
@@ -271,7 +296,7 @@ export class Store extends EventEmitter {
 
   // The agent's answers start the next round: its replies become a document of their own at
   // the top, next to your notes, and the sources are rendered again to show what changed.
-  async respond(id, { replies = [], files = null, rerender = true, overview, comments }) {
+  async respond(id, { replies = [], files = null, rerender = true, overview, comments, drafts = [] }) {
     const review = this.get(id);
     const round = review.round;
     if (files) review.files = files;
@@ -284,7 +309,8 @@ export class Store extends EventEmitter {
     const marks = this.feedback(id, round)?.marks ?? this.draft(id, round).marks;
     const repliesDoc = this.renderReplies(latest, round, marks, replies);
     writeJson(this.roundDir(id, round, 'replies.json'), replies);
-    await this.startRound(latest, round + 1, [repliesDoc, ...docs]);
+    const draftsDoc = drafts.length ? [renderDrafts(drafts)] : [];
+    await this.startRound(latest, round + 1, [repliesDoc, ...draftsDoc, ...docs]);
     return this.get(id);
   }
 
@@ -311,6 +337,21 @@ export class Store extends EventEmitter {
       html: `<div class="doc spec replies"><h1>Antworten auf Runde ${round}</h1>${items || '<p>Keine Markierungen.</p>'}</div>`,
       rows,
     };
+  }
+
+  // The drafts of the round, each with what the user's marks on it say: 'ok' to post it,
+  // 'no' to drop it, 'change' with a note, or 'none' when nothing was marked on it.
+  draftVerdicts(id, round, marks) {
+    const doc = this.docs(id, round).find((d) => d.kind === 'replies' && d.drafts);
+    if (!doc) return [];
+    return doc.drafts.map((draft, i) => {
+      const row = doc.rows.findIndex((r) => r.kind === 'draft' && r.draft === i + 1);
+      const on = marks.map((m, n) => ({ m, n: n + 1 })).filter(({ m }) => (m.rows ?? []).includes(row));
+      const noted = on.find(({ m }) => m.note?.length);
+      const stamps = on.map(({ m }) => m.stamp);
+      const verdict = noted ? 'change' : stamps.includes('no') ? 'no' : stamps.includes('ok') ? 'ok' : on.length ? 'unclear' : 'none';
+      return { n: i + 1, ...draft, verdict, marks: on.map(({ n }) => n) };
+    });
   }
 
   async addContext(id, files) {

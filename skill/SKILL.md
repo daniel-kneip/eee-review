@@ -64,10 +64,16 @@ When the user asks you to bring a pull request (Bitbucket, GitHub, ...) to the t
    - Leave out comments that are resolved or outdated unless the user wants them.
 4. Review round by round as usual.
 5. Post nothing on the PR until the user says so. Then draft the PR comments from the marks and
-   show them to the user in the next round's replies, or in the chat if the review is closed.
-   - Inline comments go at the file and line of their mark.
-   - A mark on a colleague's comment becomes a reply in that thread, by its `ref`.
-   - Post them once the user approves the drafts.
+   pass them as `drafts` to `review_respond`, together with your replies.
+   - Inline comments carry the file and line of their mark.
+   - A mark on a colleague's comment becomes a reply in that thread: set `ref` to that comment's
+     `ref`.
+   - The drafts appear on the tablet as a document of their own, one box each. The user stamps
+     each one: OK to post it, Nein to drop it, or a note to change it.
+   - `review_wait` then lists every draft with its verdict. Post exactly the approved ones, with
+     their text. Revise the ones with a note and show them again in the next round. Never post
+     one that was not approved.
+   - If the review is already closed, show the drafts in the chat and wait for approval there.
    - Write them in the user's voice and language, not as notes about the review.
    - Keep each draft close to the user's note: their wording, their length, nothing added.
      Details from the thread or the code that the note does not say stay out of the draft.

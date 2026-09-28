@@ -80,6 +80,19 @@ function feedbackContent(result) {
       : 'Der Nutzer hat nichts markiert. Frag im Chat nach, ob das Review damit erledigt ist, und rufe dann review_close auf, statt eine leere Runde zu starten.';
     content.push(text(`# Review "${review.title}" (${review.id}), Runde ${review.round}: ${result.marks.length} Markierungen\n\n${next}${again}`));
     result.marks.forEach((m) => describe(m, `Markierung ${m.n}`));
+    if (result.drafts?.length) {
+      const VERDICT = {
+        ok: 'freigegeben (OK): so posten',
+        no: 'verworfen (Nein): nicht posten',
+        change: 'Änderung gewünscht: Notiz lesen, überarbeiten und in der nächsten Runde erneut vorlegen',
+        unclear: 'markiert, aber ohne OK, Nein oder Notiz: nachfragen, nicht posten',
+        none: 'nicht markiert: nicht posten',
+      };
+      const lines = result.drafts.map(
+        (d) => `- Entwurf ${d.n}${d.ref ? ` (Antwort auf ${d.ref})` : ''}: ${VERDICT[d.verdict]}${d.marks.length ? ` (Markierung ${d.marks.join(', ')})` : ''}`,
+      );
+      content.push(text(`# Kommentar-Entwürfe\n\n${lines.join('\n')}\n\nPoste nur die freigegebenen, mit genau ihrem Text.`));
+    }
   }
   return content;
 }
@@ -203,11 +216,22 @@ export async function startMcp() {
         files: z.array(z.string()).optional().describe('ersetzt die Dokumentliste, falls sie sich ändern soll'),
         overview,
         comments: comments.describe('ersetzt die Kommentare, falls angegeben; sonst bleiben sie'),
+        drafts: z
+          .array(
+            z.object({
+              text: z.string(),
+              ref: z.string().optional().describe('Antwort auf diesen Kommentar (dessen ref)'),
+              file: z.string().optional(),
+              line: z.number().int().optional(),
+            }),
+          )
+          .optional()
+          .describe('PR-Kommentare zur Freigabe: erscheinen als eigenes Dokument, der Nutzer stempelt jeden mit OK oder Nein'),
       },
     },
-    async ({ id, replies, files, overview, comments }) => {
+    async ({ id, replies, files, overview, comments, drafts }) => {
       await ensureHub();
-      const { review } = await call('POST', `/api/agent/respond/${id}`, { replies, files, overview, comments });
+      const { review } = await call('POST', `/api/agent/respond/${id}`, { replies, files, overview, comments, drafts });
       return {
         content: [
           text(

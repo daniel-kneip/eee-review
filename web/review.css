@@ -362,3 +362,7 @@ canvas {
 .code .notes {
   padding: 4px 0;
 }
+.comment.draft {
+  border-style: dashed;
+  border-left-style: solid;
+}

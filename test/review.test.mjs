@@ -228,6 +228,32 @@ test('a pull request comes with its details and comments, shows only what its br
     const feedback = await call('GET', `/api/agent/wait/${review.id}?timeout=5`);
     assert.equal(feedback.marks[0].where, 'auth.js (Diff, Zeile 2)');
     assert.equal(feedback.marks[0].text, '[Kommentar 42 von Anna zu auth.js:2] Is logging ids fine here?\n  Antwort von Ben: Only in dev.');
+
+    await call('POST', `/api/agent/respond/${review.id}`, {
+      replies: [{ mark: 1, text: 'Drafted a reply.' }],
+      drafts: [
+        { ref: '42', text: 'Only in dev, as Ben says.' },
+        { file: 'auth.js', line: 2, text: 'Could be debug level.' },
+        { text: 'Thanks all!' },
+      ],
+    });
+    const round2 = store.docs(review.id, 2);
+    assert.deepEqual(round2.map((d) => d.title).slice(0, 2), ['Antworten Runde 1', 'Kommentar-Entwürfe']);
+    const draftRow = (n) => round2[1].rows.findIndex((r) => r.kind === 'draft' && r.draft === n);
+    const onDraft = (n, extra) => ({ id: `d${n}`, doc: round2[1].id, ink: [[[5, 5], [60, 6]]], note: [], rows: [draftRow(n)], ...extra });
+    await call('POST', `/api/r/${review.id}/submit`, {
+      marks: [onDraft(1, { stamp: 'ok' }), onDraft(2, { note: [[[1, 1, 200], [30, 10, 200]]] })],
+    });
+    const verdicts = (await call('GET', `/api/agent/wait/${review.id}?timeout=5`)).drafts;
+    assert.deepEqual(
+      verdicts.map((d) => [d.n, d.ref ?? null, d.verdict, d.marks]),
+      [
+        [1, '42', 'ok', [1]],
+        [2, null, 'change', [2]],
+        [3, null, 'none', []],
+      ],
+      'each draft comes back with what the user stamped or wrote on it',
+    );
   } finally {
     server.close();
   }
