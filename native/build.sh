@@ -17,8 +17,16 @@ cp Dockerfile "$cache/Dockerfile"
 docker build --platform linux/amd64 -q -t eeenote-build "$cache" >/dev/null
 
 apps=("$@")
-[ ${#apps[@]} -eq 0 ] && apps=(eeereview inktest)
+[ ${#apps[@]} -eq 0 ] && apps=(eeereview inktest eeelink)
 for app in "${apps[@]}"; do
+  if [ "$app" = eeelink ]; then
+    docker run --rm --platform linux/amd64 -v "$PWD":/src eeenote-build \
+      arm-unknown-linux-gnueabi-gcc -std=gnu99 -O2 -Wall -o /src/eeelink/eeelink /src/eeelink/eeelink.c
+    libusb="$(brew --prefix libusb 2>/dev/null || echo /opt/homebrew)"
+    cc -O2 -Wall -DEEELINK_HOST -I"$libusb/include" -L"$libusb/lib" -o eeelink/eeelink-host eeelink/eeelink.c -lusb-1.0 -lpthread
+    echo "built native/eeelink/eeelink (tablet) and native/eeelink/eeelink-host (this machine)"
+    continue
+  fi
   docker run --rm --platform linux/amd64 -v "$PWD":/src eeenote-build sh -c "
     set -e
     rm -rf /tmp/b && mkdir -p /tmp/b/common /tmp/b/$app

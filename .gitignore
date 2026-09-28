@@ -2,4 +2,6 @@ node_modules/
 native/**/build/
 native/eeereview/eeereview
 native/inktest/inktest
+native/eeelink/eeelink
+native/eeelink/eeelink-host
 .DS_Store

@@ -1,17 +1,28 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DEFAULT_PORT, lanUrls, startHub } from './hub/server.mjs';
 
-const USAGE = `eee-review hub               start the review hub (tablet pages and agent API) on port ${DEFAULT_PORT}
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const USB_TELNET = 2323;
+
+const USAGE = `eee-review hub               start the review hub (tablet pages and agent API) on port ${DEFAULT_PORT},
+                             and the USB link to the tablet when native/eeelink/eeelink-host is built
 eee-review mcp               MCP server over stdio for a coding agent; starts the hub if needed
-eee-review deploy [host]     install and start the eeereview app on the tablet over telnet
-                             (host defaults to $EEE_TABLET)`;
+eee-review deploy [host]     install and start the app on the tablet over telnet: through the USB
+                             link when it is up, else over Wi-Fi to host ($EEE_TABLET)
+Environment: EEE_REVIEW_HOME, EEE_REVIEW_PORT, EEE_REVIEW_BIND (127.0.0.1 for cable only)`;
 
 const [command, ...args] = process.argv.slice(2);
 
 if (command === 'hub') {
-  const { urls } = await startHub({ log: (...parts) => console.log(new Date().toLocaleTimeString(), ...parts) });
-  console.log(`eee-review hub on port ${DEFAULT_PORT}. On the tablet: ${urls.join('  ')}`);
+  const log = (...parts) => console.log(new Date().toLocaleTimeString(), ...parts);
+  const { urls } = await startHub({ log });
+  console.log(`eee-review hub on port ${DEFAULT_PORT}. On the tablet: ${[...urls, 'USB cable'].join('  ')}`);
+  startUsbLink(log);
 } else if (command === 'mcp') {
   const { startMcp } = await import('./mcp/server.mjs');
   await startMcp();
@@ -22,28 +33,66 @@ if (command === 'hub') {
   process.exit(command ? 1 : 0);
 }
 
-// The tablet runs FreeeNote's telnetd. The app is fetched from the
-// hub with the tablet's busybox wget and started with the environment the stock note app
-// runs in, which carries the Qt Embedded display and library settings.
+// eeelink's Mac end: claims the tablet's USB bulk endpoints, connects the tablet's requests
+// to this hub, and forwards USB_TELNET here to the tablet's telnetd. It waits for the tablet
+// on its own, so it runs for as long as the hub does.
+function startUsbLink(log) {
+  const binary = path.join(root, 'native/eeelink/eeelink-host');
+  if (!fs.existsSync(binary)) return;
+  const run = () => {
+    const child = spawn(binary, [`${USB_TELNET}:23`], { stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr.on('data', (d) => log(d.toString().trim()));
+    child.on('exit', (code) => {
+      log(`eeelink exited (${code}), restarting`);
+      setTimeout(run, 3000);
+    });
+    process.on('exit', () => child.kill());
+  };
+  run();
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(0));
+}
+
+// The tablet runs FreeeNote's telnetd. Over the cable it is reached
+// through eeelink and fetches from the hub through eeelink's tablet end at 127.0.0.1:8770;
+// over Wi-Fi it is reached directly and fetches from this machine's address on its subnet.
 async function deploy(host) {
-  const hubUrl = lanUrls(DEFAULT_PORT).find((u) => sameSubnet(u, host)) ?? lanUrls(DEFAULT_PORT)[0];
-  if (!hubUrl) throw new Error('no network address to offer the tablet');
+  const usb = await reachable('127.0.0.1', USB_TELNET);
+  const lan = lanUrls(DEFAULT_PORT).find((u) => sameSubnet(u, host)) ?? lanUrls(DEFAULT_PORT)[0];
+  const hubUrl = usb ? `http://127.0.0.1:${DEFAULT_PORT}/` : lan;
+  if (!hubUrl) throw new Error('no route to the tablet: no USB link and no network address');
+  console.log(usb ? 'deploying through the USB cable' : `deploying over Wi-Fi to ${host}`);
   const dir = '/eTablet/eee-review';
-  const session = await telnet(host);
+  const session = await telnet(usb ? '127.0.0.1' : host, usb ? USB_TELNET : 23);
   const run = async (cmd, wait = 1500) => console.log((await session.run(cmd, wait)).trim());
   await run('root', 1500);
   await run('', 800);
+  const fetch = (name) =>
+    `wget -q -O ${name}.new ${hubUrl}native/${name} && mv ${name}.new ${name} && chmod +x ${name}`;
   await run(
-    `killall eeereview 2>/dev/null; mkdir -p ${dir} && cd ${dir} && wget -q -O eeereview.new ${hubUrl}native/eeereview && mv eeereview.new eeereview && chmod +x eeereview && ls -l eeereview`,
-    5000,
+    `mkdir -p ${dir} && cd ${dir} && ${fetch('start.sh')} && ${fetch('eeereview')} && ${fetch('eeelink')} && ls -l`,
+    8000,
   );
-  await run(
-    `export $(tr '\\0' '\\n' < /proc/$(pidof noteeditor)/environ | grep -E '^(QWS_|QTDIR|LD_LIBRARY_PATH|TSLIB|FONTCONFIG|HOME)')`,
-  );
-  await run(`((./eeereview ${hubUrl} ; echo "exit $?") > /tmp/eeereview.log 2>&1 &)`);
-  await new Promise((r) => setTimeout(r, 4000));
-  await run('cat /tmp/eeereview.log; pidof eeereview');
+  if (lan) await run(`echo ${lan} > ${dir}/hub-wifi`);
+  await run(`${dir}/start.sh`, 5000);
+  await run('cat /tmp/eeereview.log /tmp/eeelink.log; pidof eeereview eeelink');
   session.close();
+}
+
+function reachable(host, port) {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, host);
+    socket.setTimeout(3000);
+    socket.once('data', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => resolve(false));
+    socket.once('close', () => resolve(false));
+  });
 }
 
 function sameSubnet(url, host) {
@@ -51,9 +100,9 @@ function sameSubnet(url, host) {
   return a === host.split('.').slice(0, 3).join('.');
 }
 
-function telnet(host) {
+function telnet(host, port = 23) {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(23, host);
+    const socket = net.connect(port, host);
     let buffer = '';
     socket.setTimeout(10000, () => socket.destroy(new Error(`telnet to ${host} timed out`)));
     socket.on('error', reject);

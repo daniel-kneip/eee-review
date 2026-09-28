@@ -9,6 +9,17 @@ import { Store } from './store.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const DEFAULT_PORT = Number(process.env.EEE_REVIEW_PORT ?? 8770);
+// 127.0.0.1 keeps the hub off the network entirely; the tablet then reaches it only through
+// the USB cable, where eeelink connects to it from this machine.
+const BIND = process.env.EEE_REVIEW_BIND ?? '0.0.0.0';
+
+// What deploy fetches onto the tablet.
+const TABLET_FILES = {
+  eeereview: 'eeereview/eeereview',
+  inktest: 'inktest/inktest',
+  eeelink: 'eeelink/eeelink',
+  'start.sh': 'tablet/start.sh',
+};
 
 const STATUS = {
   open: 'neu',
@@ -129,8 +140,8 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
         if (fs.existsSync(file))
           return send(req, res, fs.readFileSync(file), m[2] === 'js' ? 'text/javascript' : 'text/css');
       }
-      if (req.method === 'GET' && (m = p.match(/^\/native\/(eeereview|inktest)$/))) {
-        const file = path.join(root, 'native', m[1], m[1]);
+      if (req.method === 'GET' && (m = p.match(/^\/native\/([\w.-]+)$/)) && TABLET_FILES[m[1]]) {
+        const file = path.join(root, 'native', TABLET_FILES[m[1]]);
         if (fs.existsSync(file)) return send(req, res, fs.readFileSync(file), 'application/octet-stream');
       }
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})$/))) {
@@ -202,7 +213,7 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '0.0.0.0', () => resolve({ server, store, urls: lanUrls(port) }));
+    server.listen(port, BIND, () => resolve({ server, store, urls: BIND === '0.0.0.0' ? lanUrls(port) : [] }));
   });
 }
 

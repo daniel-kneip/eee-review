@@ -30,14 +30,34 @@ claude mcp add eee-review --scope user -- node "$PWD/src/cli.mjs" mcp
 ln -s "$PWD/skill" ~/.claude/skills/eee-review      # optional: Ablauf für den Agenten
 ```
 
-Tablet-App bauen (Docker; lädt beim ersten Mal die FreeeNote-Werkzeugkette, etwa 78 MB) und
-aufs Tablet bringen (Telnet aus FreeeNote, Hub muss laufen):
+Tablet-App bauen (Docker; lädt beim ersten Mal die FreeeNote-Werkzeugkette, etwa 78 MB, und
+braucht für die Mac-Seite des USB-Links `brew install libusb`) und aufs Tablet bringen (Telnet
+aus FreeeNote, Hub muss laufen):
 
 ```sh
 npm run native
 node src/cli.mjs hub &
-node src/cli.mjs deploy <tablet-ip>
+node src/cli.mjs deploy <tablet-ip>   # beim ersten Mal über WLAN, danach übers Kabel
 ```
+
+Auf dem Tablet startet `/eTablet/eee-review/start.sh` den USB-Link und die App.
+
+## Per Kabel statt WLAN
+
+`eeelink` (`native/eeelink`) tunnelt TCP durch das USB-Kabel, ohne IP. Echtes USB-Netzwerk
+geht mit diesem Tablet am Mac nicht: Es bietet Ethernet nur als RNDIS an, und macOS hat
+dafür keinen Treiber. Der serielle ACM-Modus lässt den seriellen Treiber von macOS schon beim
+Öffnen hängen. Übrig bleibt `g_serial` im rohen Bulk-Modus: macOS lässt das Gerät in Ruhe,
+die Mac-Seite spricht es über libusb an, und das Tablet nutzt `/dev/ttyGS0`.
+
+- Auf dem Tablet lauscht `eeelink` auf `127.0.0.1:8770`. Die App lädt zuerst diese Adresse
+  und erst danach die WLAN-Adresse des Hubs.
+- Auf dem Mac startet der Hub `eeelink-host` selbst mit. Es verbindet die Anfragen des Tablets
+  mit dem Hub und leitet `127.0.0.1:2323` auf das Telnet des Tablets weiter; darüber läuft
+  auch `deploy`.
+- Mit `EEE_REVIEW_BIND=127.0.0.1` lauscht der Hub nur noch lokal, und das Tablet erreicht
+  ihn nur noch übers Kabel. Mit abgeschaltetem WLAN ist dann auch das Telnet des Tablets
+  von außen nicht mehr zu erreichen.
 
 ## Ablauf
 

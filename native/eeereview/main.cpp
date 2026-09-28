@@ -2,10 +2,10 @@
 // handed to the page's window.pen. Taps on the page's buttons still reach it as the usual
 // tslib mouse clicks.
 //
-//   ./eeereview [hub url] [top]
+//   ./eeereview [hub url ...]
 //
-// top is how many pixels the system header covers; without it the header's height is
-// taken from the available screen geometry.
+// The hub URLs are tried in order until one loads: start.sh passes the cable first
+// (eeelink's local end, 127.0.0.1:8770) and the Wi-Fi address after it.
 
 #include <QtGui>
 #include <QtWebKit>
@@ -20,7 +20,8 @@
 class ReviewView : public QWebView {
     Q_OBJECT
 public:
-    ReviewView() : swallowing(false) {
+    ReviewView(const QStringList &list) : urls(list), tried(0), started(false), swallowing(false) {
+        connect(this, SIGNAL(loadFinished(bool)), this, SLOT(loaded(bool)));
         page()->mainFrame()->setScrollBarPolicy(Qt::Vertical, Qt::ScrollBarAlwaysOff);
         page()->mainFrame()->setScrollBarPolicy(Qt::Horizontal, Qt::ScrollBarAlwaysOff);
         PenReader *pen = new PenReader("/dev/input/event2", this);
@@ -31,6 +32,8 @@ public:
         streamBatch.setInterval(40);
         connect(&streamBatch, SIGNAL(timeout()), this, SLOT(flushStream()));
     }
+
+    void start() { load(QUrl(urls.first())); }
 
 protected:
     // tslib delivers the same pen as mouse events. Over a canvas they would set WebKit
@@ -61,6 +64,16 @@ protected:
     }
 
 private slots:
+    // Only the first page decides the route: once the inbox came through one address,
+    // every later page is on the same host.
+    void loaded(bool ok) {
+        if (ok || tried + 1 >= urls.size() || started) {
+            started = started || ok;
+            return;
+        }
+        fprintf(stderr, "no hub at %s, trying %s\n", qPrintable(urls[tried]), qPrintable(urls[tried + 1]));
+        load(QUrl(urls[++tried]));
+    }
     void penDown(int x, int y, int pressure, qint64) {
         QPoint p = toView(x, y);
         mode = run(QString("window.pen ? pen.down(%1, %2, %3) : ''").arg(p.x()).arg(p.y()).arg(pressure)).toString();
@@ -120,23 +133,28 @@ private:
     QVector<QPoint> ink, streaming;
     QVector<int> pressures;
     QRect dirty;
+    QStringList urls;
+    int tried;
+    bool started;
     bool swallowing;
     QTimer streamBatch;
 };
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
-    QUrl url(argc > 1 ? QString(argv[1]) : QString("http://127.0.0.1:8770/"));
+    QStringList urls;
+    for (int i = 1; i < argc; ++i) urls << QString(argv[i]);
+    if (urls.isEmpty()) urls << "http://127.0.0.1:8770/";
     QRect screen = QApplication::desktop()->screenGeometry();
     QRect available = QApplication::desktop()->availableGeometry();
     fprintf(stderr, "screen %dx%d+%d+%d, available %dx%d+%d+%d\n", screen.width(), screen.height(), screen.x(),
             screen.y(), available.width(), available.height(), available.x(), available.y());
-    int top = argc > 2 ? QString(argv[2]).toInt() : available.y();
+    int top = available.y();
 
-    ReviewView view;
+    ReviewView view(urls);
     view.setWindowFlags(Qt::FramelessWindowHint);
     view.setGeometry(screen.x(), screen.y() + top, screen.width(), screen.height() - top);
-    view.load(url);
+    view.start();
     view.show();
     return app.exec();
 }
