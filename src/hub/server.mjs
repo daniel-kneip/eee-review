@@ -58,13 +58,16 @@ function readJsonFile(file) {
   }
 }
 
+// The tablet deflates what it sends: ink compresses well, and its upstream is the slow way.
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
       try {
-        resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {});
+        let body = Buffer.concat(chunks);
+        if (req.headers['content-encoding'] === 'deflate') body = zlib.inflateSync(body);
+        resolve(body.length ? JSON.parse(body.toString('utf8')) : {});
       } catch (err) {
         reject(err);
       }

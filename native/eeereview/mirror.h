@@ -300,8 +300,10 @@ private:
         req.setRawHeader("X-EEE-Token", token);
         QNetworkReply *reply;
         if (body) {
+            // qCompress gives a zlib stream behind its own four-byte length.
             req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-            reply = net.post(req, *body);
+            req.setRawHeader("Content-Encoding", "deflate");
+            reply = net.post(req, qCompress(*body).mid(4));
         } else reply = net.get(req);
         new Deadline(reply, timeout);
         return reply;

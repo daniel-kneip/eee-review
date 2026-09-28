@@ -254,7 +254,13 @@ test('the hub answers neither web pages elsewhere nor callers without its token,
       const res = await create({ title: 't', kind: 'spec', repo, files: [file] });
       assert.match((await res.json()).error ?? '', /outside the repository/, file);
     }
-    assert.equal((await create({ title: 't', kind: 'spec', repo, files: ['spec.md'] })).status, 200);
+    const { review } = await (await create({ title: 't', kind: 'spec', repo, files: ['spec.md'] })).json();
+    const deflated = await fetch(`${base}/api/r/${review.id}/draft`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'deflate' },
+      body: zlib.deflateSync(JSON.stringify({ round: 1, marks: [{ id: 'm1', doc: 'x', ink: [], note: [] }] })),
+    });
+    assert.equal(deflated.status, 200, 'the tablet deflates what it sends');
   } finally {
     server.close();
   }
