@@ -21,6 +21,7 @@ const TABLET_FILES = {
   eeelink: 'eeelink/eeelink',
   'start.sh': 'tablet/start.sh',
   qcopspy: 'qcopspy/qcopspy',
+  pagetest: 'pagetest/pagetest',
 };
 const TABLET_ICONS = {
   'icon_b_eeereview.png': () => iconPng(259, 261, 5),
@@ -170,6 +171,10 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})$/))) {
         log('open', m[1]);
         return send(req, res, reviewPage(store, store.get(m[1])));
+      }
+      if (req.method === 'GET' && (m = p.match(/^\/pages\/([0-9a-f]{8})\/(\d+)\/(index\.json|\d+\.png)$/))) {
+        const file = path.join(store.home, 'pages', m[1], m[2], m[3]);
+        if (fs.existsSync(file)) return send(req, res, fs.readFileSync(file), m[3].endsWith('.png') ? 'image/png' : 'application/json');
       }
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/fig\/([0-9a-f]+\.png)$/))) {
         return send(req, res, fs.readFileSync(store.dir(m[1], 'figures', m[2])), 'image/png');
