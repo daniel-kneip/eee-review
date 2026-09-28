@@ -35,9 +35,19 @@
   var noteTiles = [], noteShown = null;
   var saveTimer = null;
 
-  for (var d = 0; d < R.docs.length; d++) {
-    scrolls.push(0);
-    el('doc-' + d).style.position = 'relative';
+  for (var d = 0; d < R.docs.length; d++) scrolls.push(0);
+
+  // Documents arrive as markup strings and become elements when first shown: WebKit on the
+  // tablet takes seconds to build every document of a large review up front.
+  function docNode(i) {
+    var node = el('doc-' + i);
+    if (node) return node;
+    node = document.createElement('div');
+    node.id = 'doc-' + i;
+    node.style.position = 'relative';
+    node.innerHTML = DOCS[i];
+    store.appendChild(node);
+    return node;
   }
 
   function now() { return new Date().getTime(); }
@@ -95,7 +105,7 @@
   function showDocument(index) {
     while (docLayer.firstChild) store.appendChild(docLayer.firstChild);
     cur = index;
-    docLayer.appendChild(el('doc-' + cur));
+    docLayer.appendChild(docNode(cur));
     measure();
   }
 
@@ -168,7 +178,7 @@
 
   function onDoc(di, y0, y1, draw) {
     if (!docTiles[di]) docTiles[di] = [];
-    onTiles(docTiles[di], function (t) { return tileCanvas(el('doc-' + di), t, docW); }, y0, y1, draw);
+    onTiles(docTiles[di], function (t) { return tileCanvas(docNode(di), t, docW); }, y0, y1, draw);
   }
 
   // A new note tile gets its ruled lines and whatever ink of the open note falls on it.

@@ -106,7 +106,8 @@ function reviewPage(store, review) {
     })),
     marks: store.draft(review.id, review.round).marks,
   };
-  const store_ = docs.map((d, i) => `<div id="doc-${i}">${d.html}</div>`).join('');
+  const script = (value) =>
+    JSON.stringify(value).replace(/<\//g, '<\\/').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return `<!DOCTYPE html>
 <html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <meta name="viewport" content="width=device-width"><title>${escapeHtml(review.title)}</title>
@@ -121,8 +122,9 @@ function reviewPage(store, review) {
 <div class="bar" id="toolBar"><button type="button" id="filesBtn">Dateien</button><button type="button" id="toolPen" class="on">Stift</button><button type="button" id="toolEraser">Radierer</button><button type="button" id="undo">&#8630;</button><button type="button" id="prevDoc">&#9664;</button><button type="button" id="nextDoc">&#9654;</button><span id="status"></span></div>
 <div id="shade"></div>
 <div id="files"></div>
-<div id="store" style="display:none">${store_}</div>
-<script type="text/javascript">var REVIEW = ${JSON.stringify(client)};</script>
+<div id="store" style="display:none"></div>
+<script type="text/javascript">var REVIEW = ${script(client)};
+var DOCS = ${script(docs.map((d) => d.html))};</script>
 <script type="text/javascript" src="/web/review.js"></script>
 </body></html>`;
 }

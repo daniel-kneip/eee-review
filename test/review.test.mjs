@@ -98,7 +98,7 @@ test('a code review of the files asked for goes to the tablet, comes back with l
       files: ['auth.js', 'spec.md'],
     });
     const page = await (await fetch(`${base}/r/${review.id}`)).text();
-    const client = JSON.parse(page.match(/var REVIEW = (.*);<\/script>/)[1]);
+    const client = JSON.parse(page.match(/var REVIEW = (.*);\n/)[1]);
     assert.deepEqual(
       client.docs.map((d) => `${d.kind} ${d.path}`),
       ['diff auth.js', 'file auth.js', 'spec spec.md'],
@@ -145,7 +145,7 @@ test('a code review of the files asked for goes to the tablet, comes back with l
 
     await call('POST', `/api/agent/context/${review.id}`, { files: ['auth.js'] });
     const withContext = JSON.parse(
-      (await (await fetch(`${base}/r/${review.id}`)).text()).match(/var REVIEW = (.*);<\/script>/)[1],
+      (await (await fetch(`${base}/r/${review.id}`)).text()).match(/var REVIEW = (.*);\n/)[1],
     );
     assert.equal(withContext.docs.filter((d) => d.context).length, 0, 'a file already shown whole is not added twice');
   } finally {
