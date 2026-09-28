@@ -4,4 +4,5 @@ native/eeereview/eeereview
 native/inktest/inktest
 native/eeelink/eeelink
 native/eeelink/eeelink-host
+native/qcopspy/qcopspy
 .DS_Store

@@ -20,7 +20,7 @@ const TABLET_FILES = {
   inktest: 'inktest/inktest',
   eeelink: 'eeelink/eeelink',
   'start.sh': 'tablet/start.sh',
-  'launch.sh': 'tablet/launch.sh',
+  qcopspy: 'qcopspy/qcopspy',
 };
 const TABLET_ICONS = {
   'icon_b_eeereview.png': () => iconPng(259, 261, 5),

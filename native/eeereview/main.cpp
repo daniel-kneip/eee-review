@@ -62,23 +62,40 @@ static const char *UNREACHABLE =
     "<p><button style='font-size:22px;padding:8px 24px;margin-right:16px' onclick='eeeApp.retry()'>Nochmal</button>"
     "<button style='font-size:22px;padding:8px 24px' onclick='eeeApp.quit()'>Beenden</button></p></body></html>";
 
-// The stock launcher shows a loading dialog when it starts an app and waits for the app to
-// report app/showed on its QCop channel; an app that never does leaves the dialog up. It
-// also sends apps messages of its own (app/shutdown among them), which are logged here to
-// learn the rest, and power events come on qte/etablepowerchannel.
+// eeeserver starts the app and shows a loading dialog until the app reports App/showed to the
+// launcher with its name, as a streamed QString. The status bar title and App/hide follow the
+// stock apps, which send them on the way in and out.
+static const char *APP_NAME = "eeereview";
+
+static QByteArray streamed(const QString &text) {
+    QByteArray data;
+    QDataStream out(&data, QIODevice::WriteOnly);
+    out << text;
+    return data;
+}
+
 class LauncherLink : public QObject {
     Q_OBJECT
 public:
     LauncherLink(QObject *parent) : QObject(parent) {
-        const char *channels[] = { "eeereview", "qte/etablepowerchannel" };
+        const char *channels[] = { APP_NAME, "qte/etablepowerchannel" };
         for (int i = 0; i < 2; ++i) {
             QCopChannel *channel = new QCopChannel(channels[i], this);
             connect(channel, SIGNAL(received(QString, QByteArray)), this, SLOT(received(QString, QByteArray)));
         }
+        connect(qApp, SIGNAL(aboutToQuit()), this, SLOT(hidden()));
     }
-    void showed() { QCopChannel::send("launcher", "app/showed"); }
+    void showed() {
+        QCopChannel::send("launcher", "App/showed", streamed(APP_NAME));
+        QCopChannel::send("statusbar", "title changed", streamed("eee-review"));
+    }
 
 private slots:
+    void hidden() {
+        QCopChannel::send("statusbar", "title changed", streamed("Home"));
+        QCopChannel::send("launcher", "App/hide", streamed(APP_NAME));
+        QCopChannel::flush();
+    }
     void received(const QString &message, const QByteArray &data) {
         fprintf(stderr, "qcop %s (%d bytes)\n", qPrintable(message), data.size());
         if (message == "app/shutdown") qApp->quit();
@@ -302,11 +319,27 @@ private:
     QTimer streamBatch;
 };
 
+// Started from the menu, the app gets no arguments and no log: it brings up the USB link
+// itself and tries the cable first, then the Wi-Fi address deploy left behind.
+static QStringList menuStart() {
+    freopen("/tmp/eeereview.log", "w", stderr);
+    setvbuf(stderr, 0, _IONBF, 0);
+    QProcess::execute("/bin/sh", QStringList() << "/eTablet/eee-review/start.sh" << "link");
+    QStringList urls;
+    urls << "http://127.0.0.1:8770/";
+    QFile wifi("/eTablet/eee-review/hub-wifi");
+    if (wifi.open(QIODevice::ReadOnly)) {
+        QString url = QString::fromUtf8(wifi.readAll()).trimmed();
+        if (!url.isEmpty()) urls << url;
+    }
+    return urls;
+}
+
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QStringList urls;
     for (int i = 1; i < argc; ++i) urls << QString(argv[i]);
-    if (urls.isEmpty()) urls << "http://127.0.0.1:8770/";
+    if (urls.isEmpty()) urls = menuStart();
     QRect screen = QApplication::desktop()->screenGeometry();
     QRect available = QApplication::desktop()->availableGeometry();
     fprintf(stderr, "screen %dx%d+%d+%d, available %dx%d+%d+%d\n", screen.width(), screen.height(), screen.x(),

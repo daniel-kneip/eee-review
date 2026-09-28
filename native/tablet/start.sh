@@ -14,6 +14,8 @@ if ! pidof eeelink >/dev/null; then
   insmod $GADGETS/g_serial.ko use_acm=0
   ./eeelink > /tmp/eeelink.log 2>&1 &
 fi
+# The app started from the menu runs this for the link only.
+[ "$1" = link ] && exit 0
 
 # The environment the stock apps run in (see /usr/local/eTablet/run.sh).
 export QTDIR=/usr/local/Trolltech/QtEmbedded-4.6.2-arm
@@ -24,9 +26,4 @@ export TSLIB_TSDEVICE=/dev/input/event2 TSLIB_CONFFILE=/etc/ts.conf TSLIB_PLUGIN
 export FONTCONFIG_PATH=/etc/fonts HOME=/eTablet
 
 killall eeereview 2>/dev/null
-HUBS="http://127.0.0.1:8770/ $(cat hub-wifi 2>/dev/null)"
-# From the launcher the app has to stay this process, which the launcher watches.
-if [ "$1" = foreground ]; then
-  exec ./eeereview $HUBS > /tmp/eeereview.log 2>&1
-fi
-./eeereview $HUBS > /tmp/eeereview.log 2>&1 &
+./eeereview > /tmp/eeereview.log 2>&1 &
