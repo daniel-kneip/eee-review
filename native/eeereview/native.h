@@ -20,7 +20,7 @@ namespace native {
 
 static const int TOOLBAR_H = 54, NOTEBAR_H = 54, RAIL_W = 38, MIN_PANE = 120, RULE = 60;
 static const int NOTE_TILE = 256;
-static const int TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800;
+static const int TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800, NEAR = 120, CONFIRM_MS = 5000;
 
 struct Mark {
     Mark() : noteScroll(0), asked(false), rowsKnown(false) {}
@@ -220,6 +220,7 @@ public slots:
         startY = p.y();
         startNoteH = noteH;
         startDrawerScroll = drawerScroll;
+        if (locked() && (gesture == "doc" || gesture == "note")) gesture = "read";
         if (gesture == "rail") railTo(p.y());
         else if (gesture == "noteRail") {
             noteExtent = noteLength();
@@ -256,6 +257,11 @@ public slots:
         else if (gesture == "shade") closeDrawer();
         else if (gesture == "drawer") { if (pathLength(live) < TAP_MAX) drawerTap(live.first()); }
         else if (gesture.startsWith("button:")) { if (buttonAt(p) == gesture) press(gesture.mid(7)); }
+        else if (gesture == "read" && pathLength(live) < TAP_MAX && docRect().contains(live.first())) {
+            MarkPtr hit = hitMark(toDoc(live.first()));
+            if (hit && hit != openMark) openNote(hit);
+            else if (!hit) status(lockedText());
+        }
         else if ((gesture == "doc" || gesture == "note") && tool == "pen") endStroke();
         QRect trail = live.boundingRect().adjusted(-4, -4, 4, 4);
         live.clear();
@@ -392,6 +398,7 @@ private:
         title = review.value("title").toString();
         round = review.value("round").toInt();
         kind = review.value("kind").toString();
+        reviewStatus = review.value("status").toString();
         foreach (const QVariant &v, review.value("docs").toList()) {
             QVariantMap m = v.toMap();
             Doc d;
@@ -772,8 +779,8 @@ private:
         QList<Button> out;
         QRect bar = noteBarRect();
         const char *names[] = { "ok", "no", "ask", "question", "close" };
-        const char *labels[] = { "OK", "Nein", "?", "Frage", "Schlie\xc3\x9f" "en" };
-        int widths[] = { 64, 72, 50, 90, 124 };
+        const char *labels[] = { "OK", "Nein", "?", "Agent fragen", "Schlie\xc3\x9f" "en" };
+        int widths[] = { 64, 72, 50, 140, 110 };
         int x = 190;
         for (int i = 0; i < 5; ++i) {
             Button b;
@@ -873,6 +880,7 @@ private:
     }
 
     QString docStatus() {
+        if (locked()) return lockedText();
         Doc *d = doc();
         return d ? QString::fromUtf8("%1 \xc2\xb7 %2 Mark.").arg(d->title).arg(marks.size()) : title;
     }
@@ -887,6 +895,15 @@ private slots:
     void clearStatus() {
         message.clear();
         update(toolBarRect());
+    }
+    void disarm() {
+        if (armed.isEmpty() || armedAt.elapsed() < CONFIRM_MS) return;
+        armed.clear();
+        clearStatus();
+        if (drawerOpen) {
+            buildDrawer();
+            update(drawerRect());
+        }
     }
 
 private:
@@ -965,6 +982,10 @@ private:
     }
 
     void press(const QString &name) {
+        if (locked() && (name == "ok" || name == "no" || name == "ask" || name == "question" || name == "undo" || name == "send")) {
+            status(lockedText());
+            return;
+        }
         if (name == "files") toggleDrawer();
         else if (name == "pen" || name == "eraser") setTool(name);
         else if (name == "undo") undo();
@@ -1007,7 +1028,9 @@ private:
             if (hit && hit != openMark) openNote(hit);
             return;
         }
-        if (openMark) {
+        // A stroke well away from the open mark means something else.
+        if (openMark && openMark->doc == doc()->id &&
+            boundsOf(openMark->ink).adjusted(-NEAR, -NEAR, NEAR, NEAR).intersects(stroke.boundingRect())) {
             QRect before = markArea(openMark);
             QPoint badge = badgeAt(openMark);
             openMark->ink << stroke;
@@ -1059,6 +1082,7 @@ private:
     }
 
     void erase(const QPoint &p) {
+        if (locked()) return;
         if (gesture == "note" && openMark) {
             QPoint at = toNote(p);
             for (int i = openMark->note.size() - 1; i >= 0; --i) {
@@ -1093,6 +1117,7 @@ private:
     }
 
     void undo() {
+        if (locked()) return;
         if (undoStack.isEmpty()) return;
         Undo u = undoStack.takeLast();
         switch (u.kind) {
@@ -1337,7 +1362,8 @@ private:
         }
         plainRows("Nachgeliefert", isContext);
         drawerHeight += 10;
-        addRow(DrawerRow::Action, QString("An den Agenten senden (%1)").arg(marks.size()), 56, "send");
+        if (!locked())
+            addRow(DrawerRow::Action, armed == "send" ? QString("Wirklich senden? Nochmal tippen") : QString("An den Agenten senden (%1)").arg(marks.size()), 56, "send");
         addRow(DrawerRow::Action, "Alle Reviews", 56, "inbox");
         addRow(DrawerRow::Action, "App beenden", 56, "quit");
         drawerHeight += 10;
@@ -1453,13 +1479,23 @@ private:
         QMetaObject::invokeMethod(this, method, Qt::QueuedConnection);
     }
     void leave() { saveThen("closeView"); }
+    // The round goes to the agent for good, so it takes a second tap.
     void submit() {
+        if (locked()) return;
+        int bare = 0;
+        foreach (const MarkPtr &m, marks)
+            if (m->note.isEmpty() && m->stamp.isEmpty()) ++bare;
+        QString prompt = marks.isEmpty() ? QString::fromUtf8("Nichts markiert \xe2\x80\x93 trotzdem senden? Nochmal tippen")
+                       : bare ? QString::fromUtf8("%1 Markierungen senden, %2 ohne Notiz oder Stempel? Nochmal tippen").arg(marks.size()).arg(bare)
+                              : QString::fromUtf8("%1 Markierungen senden? Nochmal tippen").arg(marks.size());
+        if (!confirmed("send", prompt)) return;
         saveTimer.stop();
         mirror->post(reviewId, "submit", marksBody());
         emit closed();
     }
     void ask() {
-        if (!openMark) return;
+        if (!openMark || locked()) return;
+        if (!confirmed("question", QString::fromUtf8("Frage mit dieser Notiz an den Agenten schicken? Nochmal tippen"))) return;
         QByteArray body = "{\"round\":";
         appendInt(body, round);
         body += ",\"mark\":" + markJson(openMark) + "}";
@@ -1469,6 +1505,27 @@ private:
         status(mirror->online() ? QString::fromUtf8("Frage wird gesendet \xe2\x80\xa6")
                                 : QString::fromUtf8("Frage geht raus, sobald der Hub erreichbar ist"));
     }
+    // True on the second tap within CONFIRM_MS; the first only asks.
+    bool confirmed(const QString &what, const QString &prompt) {
+        if (armed == what && armedAt.elapsed() < CONFIRM_MS) {
+            armed.clear();
+            return true;
+        }
+        armed = what;
+        armedAt.start();
+        message = prompt;
+        update(toolBarRect());
+        if (drawerOpen) {
+            buildDrawer();
+            update(drawerRect());
+        }
+        QTimer::singleShot(CONFIRM_MS, this, SLOT(disarm()));
+        return false;
+    }
+    // A submitted round is the agent's until it answers; the app only shows it.
+    bool locked() const { return reviewStatus == "submitted" || mirror->submitWaiting(reviewId); }
+    QString lockedText() const { return QString::fromUtf8("Beim Agenten \xe2\x80\x93 wartet auf seine Antwort"); }
+
     QByteArray marksBody() {
         QByteArray body = "{\"round\":";
         appendInt(body, round);
@@ -1476,7 +1533,8 @@ private:
     }
 
     Mirror *mirror;
-    QString reviewId, title, kind, message;
+    QString reviewId, title, kind, message, reviewStatus, armed;
+    QTime armedAt;
     int round;
     QList<Doc> docs;
     QList<MarkPtr> marks;

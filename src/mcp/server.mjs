@@ -8,7 +8,7 @@ import { DEFAULT_PORT, lanUrls } from '../hub/server.mjs';
 
 const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cli.mjs');
 const hub = `http://127.0.0.1:${DEFAULT_PORT}`;
-const STAMPS = { ok: 'OK', no: 'Nein', ask: 'Frage' };
+const STAMPS = { ok: 'OK', no: 'Nein', ask: '? unklar' };
 
 async function call(method, route, body) {
   const res = await fetch(hub + route, {
@@ -69,11 +69,11 @@ function feedbackContent(result) {
     result.requests.forEach((m, i) => describe(m, `Frage ${i + 1}`));
   }
   if (result.status === 'feedback') {
-    content.push(
-      text(
-        `# Review "${review.title}" (${review.id}), Runde ${review.round}: ${result.marks.length} Markierungen\n\nLies jede handschriftliche Notiz und schreibe als Erstes auf, wie du sie gelesen hast; der Nutzer sieht deine Lesart in der nächsten Runde. Antworte dann mit review_respond, eine Antwort pro Markierung (mark = Nummer).`,
-      ),
-    );
+    const again = result.again ? '\n\nDiese Runde wurde schon einmal geliefert, aber noch nicht beantwortet. Falls du sie schon kennst, antworte einfach.' : '';
+    const next = result.marks.length
+      ? 'Lies jede handschriftliche Notiz und schreibe als Erstes auf, wie du sie gelesen hast; der Nutzer sieht deine Lesart in der nächsten Runde. Antworte dann mit review_respond, eine Antwort pro Markierung (mark = Nummer).'
+      : 'Der Nutzer hat nichts markiert. Frag im Chat nach, ob das Review damit erledigt ist, und rufe dann review_close auf, statt eine leere Runde zu starten.';
+    content.push(text(`# Review "${review.title}" (${review.id}), Runde ${review.round}: ${result.marks.length} Markierungen\n\n${next}${again}`));
     result.marks.forEach((m) => describe(m, `Markierung ${m.n}`));
   }
   return content;

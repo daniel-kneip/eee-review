@@ -4,10 +4,11 @@
 //
 // Under the cache directory:
 //   inbox.json                          the inbox as the hub last sent it
-//   <id>/review.json, <id>/version      the review as the hub last sent it, and its round:docs
+//   <id>/review.json, <id>/version      the review as the hub last sent it, and its round:docs:status
 //   <id>/marks.json                     the tablet's own marks, as last saved
 //   <id>/<round>/<doc>/index.json, <n>.png   the pages
 //   <id>/out/<seq>-<action>.json        posts the hub has not taken yet
+//   <id>/refused/<seq>-<action>.json    posts the hub refused, kept for the user to see
 
 #ifndef EEE_MIRROR_H
 #define EEE_MIRROR_H
@@ -114,6 +115,9 @@ public:
         foreach (const QString &name, outbox(id))
             if (name.endsWith("-submit.json")) return true;
         return false;
+    }
+    int refused(const QString &id) const {
+        return QDir(dir + id + "/refused").entryList(QStringList() << "*.json", QDir::Files).size();
     }
     int waiting() const {
         int n = 0;
@@ -274,8 +278,13 @@ private slots:
             // would not change.
             if (!ok && status == 0) fprintf(stderr, "mirror: sending %s failed: %s\n", qPrintable(file), qPrintable(reply->errorString()));
             else if (ok || (status >= 400 && status < 500)) {
-                if (!ok) fprintf(stderr, "mirror: hub refused %s: %d\n", qPrintable(file), status);
-                QFile::remove(file);
+                if (ok) QFile::remove(file);
+                else {
+                    fprintf(stderr, "mirror: hub refused %s: %d\n", qPrintable(file), status);
+                    QString id = reply->property("id").toString();
+                    QDir().mkpath(dir + id + "/refused");
+                    QFile::rename(file, dir + id + "/refused/" + QFileInfo(file).fileName());
+                }
                 if (ok) emit sent(reply->property("id").toString(), reply->property("action").toString());
                 emit changed();
                 push();
@@ -320,9 +329,11 @@ private:
             if (v.toMap().value("id").toString() == id) return v.toMap();
         return QVariantMap();
     }
+    // The review's copy is fetched again when this changes: a new round, context added, or the
+    // status the app locks a submitted round by.
     QString version(const QString &id) const {
         QVariantMap it = item(id);
-        return QString("%1:%2").arg(it.value("round").toInt()).arg(it.value("docs").toInt());
+        return QString("%1:%2:%3").arg(it.value("round").toInt()).arg(it.value("docs").toInt()).arg(it.value("status").toString());
     }
     bool stale(const QString &id) const { return QString::fromUtf8(readFile(dir + id + "/version")) != version(id); }
 

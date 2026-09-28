@@ -53,7 +53,8 @@ protected:
         QString name = buttonName(event->key());
         if (name == "left") scrollTo(scrollY - height() * 3 / 4);
         else if (name == "right") scrollTo(scrollY + height() * 3 / 4);
-        else if (name == "back" || name == "home" || event->key() == Qt::Key_Escape) qApp->quit();
+        // Back one press too many out of a review would otherwise end the app.
+        else if (name == "home" || event->key() == Qt::Key_Escape) qApp->quit();
         else if (name.isEmpty()) fprintf(stderr, "key 0x%x\n", event->key());
     }
     void mousePressEvent(QMouseEvent *) {}
@@ -113,12 +114,14 @@ protected:
             f.setPixelSize(24);
             p.setFont(f);
             QRect text = box.adjusted(18, 10, -18, -10);
+            p.setPen(mirror->online() || mirror->ready(id) ? Qt::black : QColor(0x99, 0x99, 0x99));
             p.drawText(text, Qt::AlignLeft | Qt::AlignTop, p.fontMetrics().elidedText(item.value("title").toString(), Qt::ElideRight, text.width()));
             f.setBold(false);
             f.setPixelSize(18);
             p.setFont(f);
             QString label = item.value("label").toString();
             if (mirror->submitWaiting(id)) label = mirror->online() ? "wird gesendet" : "wartet auf den Hub";
+            if (int n = mirror->refused(id)) label += QString::fromUtf8(" \xc2\xb7 %1 nicht angenommen").arg(n);
             QString copy = mirror->ready(id) ? QString("auf dem Tablet")
                          : mirror->online() ? QString::fromUtf8("l\xc3\xa4" "dt \xe2\x80\xa6")
                                             : QString("nur mit Hub");
@@ -127,7 +130,7 @@ protected:
                               .arg(item.value("round").toInt())
                               .arg(label, copy);
             p.setPen(QColor(0x44, 0x44, 0x44));
-            p.drawText(text, Qt::AlignLeft | Qt::AlignBottom, sub);
+            p.drawText(text, Qt::AlignLeft | Qt::AlignBottom, p.fontMetrics().elidedText(sub, Qt::ElideRight, text.width()));
             p.setPen(Qt::black);
         }
     }
@@ -184,8 +187,12 @@ private:
             return;
         }
         QVariantList items = mirror->inbox();
-        for (int i = 0; i < items.size(); ++i)
-            if (itemRect(i).contains(p)) emit open(items[i].toMap().value("id").toString());
+        for (int i = 0; i < items.size(); ++i) {
+            if (!itemRect(i).contains(p)) continue;
+            QString id = items[i].toMap().value("id").toString();
+            // Without the hub only what is on the tablet opens.
+            if (mirror->online() || mirror->ready(id)) emit open(id);
+        }
     }
 
     Mirror *mirror;

@@ -231,13 +231,21 @@ export class Store extends EventEmitter {
   }
 
   // What the agent has not seen yet: a submitted round, and context requests made while the
-  // round is still being reviewed. Taking it marks it delivered.
-  takePending(id) {
+  // round is still being reviewed. Taking it marks it delivered. A submitted round comes again
+  // until the agent answers it, in case the first delivery never reached the agent.
+  takePending(id, { again = false } = {}) {
     const review = this.get(id);
     const round = review.round;
     const requests = this.requests(id, round).filter((r) => !r.delivered);
     const feedback = this.feedback(id, round);
-    const pending = { review, round, requests, feedback: feedback && !feedback.delivered ? feedback : null };
+    const repeat = again && review.status === 'submitted' && feedback?.delivered;
+    const pending = {
+      review,
+      round,
+      requests,
+      feedback: feedback && (!feedback.delivered || repeat) ? feedback : null,
+      again: !!repeat,
+    };
     if (requests.length) {
       writeJson(
         this.roundDir(id, round, 'requests.json'),
@@ -266,14 +274,17 @@ export class Store extends EventEmitter {
   async respond(id, { replies = [], files = null, rerender = true, overview, comments }) {
     const review = this.get(id);
     const round = review.round;
-    const marks = this.feedback(id, round)?.marks ?? this.draft(id, round).marks;
     if (files) review.files = files;
     if (overview !== undefined) review.overview = overview;
     if (comments !== undefined) review.comments = comments;
     const docs = rerender ? await this.buildDocs(review) : this.docs(id, round).filter((d) => d.kind !== 'replies');
-    const repliesDoc = this.renderReplies(review, round, marks, replies);
+    // Rendering takes a while; the tablet may have saved or submitted in the meantime.
+    const latest = { ...this.get(id), files: review.files, overview: review.overview, comments: review.comments };
+    if (latest.round !== round) throw new Error(`review ${id} moved on to round ${latest.round} meanwhile`);
+    const marks = this.feedback(id, round)?.marks ?? this.draft(id, round).marks;
+    const repliesDoc = this.renderReplies(latest, round, marks, replies);
     writeJson(this.roundDir(id, round, 'replies.json'), replies);
-    await this.startRound(review, round + 1, [repliesDoc, ...docs]);
+    await this.startRound(latest, round + 1, [repliesDoc, ...docs]);
     return this.get(id);
   }
 

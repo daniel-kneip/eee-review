@@ -155,7 +155,7 @@ function renderPage(store, review, index) {
 }
 
 function pendingForAgent(store, pending) {
-  const { review, round, requests, feedback } = pending;
+  const { review, round, requests, feedback, again } = pending;
   const mark = (m, n) => {
     const { where, text } = store.describe(review.id, round, m);
     const note = store.notePng(review.id, round, m.id);
@@ -163,6 +163,7 @@ function pendingForAgent(store, pending) {
   };
   return {
     status: feedback ? 'feedback' : 'requests',
+    again,
     review: { id: review.id, title: review.title, kind: review.kind, round },
     requests: requests.map((r) => mark(r.mark, null)),
     marks: feedback ? feedback.marks.map((m, i) => mark(m, i + 1)) : [],
@@ -273,6 +274,8 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
         const body = await readBody(req);
         if (stale(m[1], body)) return json(req, res, { error: 'the review has moved on to another round' }, 409);
         if (repeated(m[1], m[2], body)) return json(req, res, { ok: true });
+        // Once submitted, the round is the agent's: later changes would renumber its marks.
+        if (store.get(m[1]).status === 'submitted') return json(req, res, { error: 'the round is already submitted' }, 409);
         if (m[2] === 'draft') store.saveDraft(m[1], locate(m[1], body.marks ?? []));
         if (m[2] === 'submit') store.submit(m[1], locate(m[1], body.marks ?? []));
         if (m[2] === 'request') store.request(m[1], locate(m[1], [body.mark])[0]);
@@ -295,7 +298,10 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
             const pending = store.takePending(id);
             return pending ? pendingForAgent(store, pending) : null;
           };
-          const now = take();
+          const now = take() ?? (() => {
+            const pending = store.takePending(id, { again: true });
+            return pending ? pendingForAgent(store, pending) : null;
+          })();
           if (now) return json(req, res, now);
           return await new Promise((resolve) => {
             const done = (value) => {

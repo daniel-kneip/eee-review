@@ -146,7 +146,11 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     assert.equal(feedback.marks[1].where, 'auth.js (Diff, Zeile 2)', 'ink alone is located on the rendered page');
     assert.ok(Buffer.from(feedback.marks[0].note, 'base64').subarray(1, 4).equals(Buffer.from('PNG')));
     await call('POST', `/api/r/${review.id}/submit`, submitted);
-    assert.equal((await call('GET', `/api/agent/wait/${review.id}?timeout=1`)).status, 'waiting', 'a resent submit is not new feedback');
+    const again = await call('GET', `/api/agent/wait/${review.id}?timeout=1`);
+    assert.equal(again.again, true, 'an unanswered round comes again, in case the agent never got it');
+    assert.equal(again.marks.length, 2, 'and a resent submit did not change it');
+    const late = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', body: JSON.stringify({ round: 1, marks: [] }) });
+    assert.equal(late.status, 409, 'a submitted round takes no more changes');
 
     const { review: next } = await call('POST', `/api/agent/respond/${review.id}`, {
       replies: [{ mark: 1, text: 'Removed the log call.' }],
@@ -155,8 +159,8 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     const round2 = await (await fetch(`${base}/r/${review.id}`)).text();
     assert.match(round2, /Removed the log call\./);
     assert.match(round2, new RegExp(`/r/${review.id}/note/1/m1`));
-    const late = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', body: JSON.stringify({ round: 1, marks: [] }) });
-    assert.equal(late.status, 409, 'a draft queued for the last round is refused');
+    const stale = await fetch(`${base}/api/r/${review.id}/draft`, { method: 'POST', body: JSON.stringify({ round: 1, marks: [] }) });
+    assert.equal(stale.status, 409, 'a draft queued for the last round is refused');
     assert.equal((await fetch(`${base}/r/${review.id}/1/pages/2/index.json`)).status, 404, 'a past round is not rendered anew');
 
     await call('POST', `/api/agent/context/${review.id}`, { files: ['auth.js'] });

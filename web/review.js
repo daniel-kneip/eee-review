@@ -752,7 +752,7 @@
     while (t && t !== filesView && !t.getAttribute('data-doc') && !t.getAttribute('data-dir') && !t.getAttribute('data-act') && !t.getAttribute('data-jump')) t = t.parentNode;
     if (!t || t === filesView) return;
     var act = t.getAttribute('data-act'), jump = t.getAttribute('data-jump'), dir = t.getAttribute('data-dir'), to = t.getAttribute('data-doc');
-    if (act === 'send') return submit();
+    if (act === 'send') return window.confirm(marks.length ? marks.length + ' Markierungen an den Agenten senden?' : 'Nichts markiert. Trotzdem senden?') && submit();
     if (act === 'inbox') return toInbox();
     if (act === 'quit') return saveThenQuit();
     if (jump) return go(Number(jump), lineAtView());
