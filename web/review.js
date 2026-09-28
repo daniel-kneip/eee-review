@@ -7,9 +7,14 @@
 //
 // Inside the eeereview app the pen arrives through window.pen at full rate, and the app keeps
 // its mouse echo away from the page; in a plain browser the pen arrives as mouse events.
+//
+// Ink lives on canvas tiles inside the document and the note, which scroll with them. Each
+// stroke is drawn once, when it is made; scrolling and opening or closing a note draw nothing.
+// The tablet rasterises canvas paths with software floating point, so redrawing ink on every
+// scroll took it seconds. Tiles are only redrawn after erasing or undoing.
 
 (function () {
-  var TOOLBAR_H = 54, NOTEBAR_H = 54, RAIL_W = 38, MIN_PANE = 120;
+  var TOOLBAR_H = 54, NOTEBAR_H = 54, RAIL_W = 38, MIN_PANE = 120, TILE = 512, RULE = 60;
   var TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800;
   // Mirrors PRESSURE_KNOTS in src/render/ink.mjs and native/common/pen.h.
   var KNOTS = [[0, 0.3], [100, 1.1], [200, 1.7], [235, 4.5]];
@@ -17,17 +22,21 @@
 
   var R = window.REVIEW;
   function el(id) { return document.getElementById(id); }
-  var docPane = el('docPane'), docLayer = el('docLayer'), docCanvas = el('docCanvas'), rail = el('rail');
-  var noteBar = el('noteBar'), notePane = el('notePane'), noteCanvas = el('noteCanvas'), toolBar = el('toolBar');
+  var docPane = el('docPane'), docLayer = el('docLayer'), rail = el('rail');
+  var noteBar = el('noteBar'), notePane = el('notePane'), noteLayer = el('noteLayer'), toolBar = el('toolBar');
   var filesView = el('files'), store = el('store');
-  var docCtx = docCanvas.getContext('2d'), noteCtx = noteCanvas.getContext('2d'), railCtx = rail.getContext('2d');
+  var railCtx = rail.getContext('2d');
 
   var W, H, docW, docH, noteH = 0, notePaneH = 0;
-  var cur = 0, scrolls = [], heights = [], rowBoxes = [];
+  var cur = 0, scrolls = [], heights = [], rowBoxes = [], docTiles = [];
   var marks = [], openMark = null, tool = 'pen', undoStack = [], active = null;
+  var noteTiles = [], noteShown = null;
   var saveTimer = null;
 
-  for (var d = 0; d < R.docs.length; d++) scrolls.push(0);
+  for (var d = 0; d < R.docs.length; d++) {
+    scrolls.push(0);
+    el('doc-' + d).style.position = 'relative';
+  }
 
   function now() { return new Date().getTime(); }
   function newId() { return (now().toString(36) + Math.random().toString(36).substring(2, 8)); }
@@ -35,6 +44,7 @@
   function removeItem(list, item) { for (var i = 0; i < list.length; i++) if (list[i] === item) { list.splice(i, 1); return i; } return -1; }
   function doc() { return R.docs[cur]; }
   function docIndex(id) { for (var i = 0; i < R.docs.length; i++) if (R.docs[i].id === id) return i; return -1; }
+  function inside(node, parent) { while (node) { if (node === parent) return true; node = node.parentNode; } return false; }
 
   function inkWidth(p) {
     if (p === undefined || p === null) return 2;
@@ -46,6 +56,13 @@
       }
     }
     return KNOTS[KNOTS.length - 1][1];
+  }
+
+  function timed(name, fn) {
+    var t = now();
+    fn();
+    var ms = now() - t;
+    if (ms > 150 && window.console) console.log(name + ' took ' + ms + ' ms');
   }
 
   // ── Layout ──────────────────────────────────────────────────────────────
@@ -61,9 +78,7 @@
     node.style.display = height > 0 ? 'block' : 'none';
   }
 
-  var layouts = 0;
   function layout() {
-    if (++layouts % 25 === 0 && window.console) console.log('layout ' + layouts);
     viewport();
     var body = H - TOOLBAR_H;
     if (!noteH) noteH = Math.round(body * 0.42);
@@ -76,25 +91,17 @@
     place(noteBar, 0, docH, W, openMark ? NOTEBAR_H : 0);
     place(notePane, 0, docH + NOTEBAR_H, W, notePaneH);
     place(toolBar, 0, H - TOOLBAR_H, W, TOOLBAR_H);
-    // The document and note canvases keep the largest size their pane can reach and the pane
-    // clips them, so opening, closing and resizing the note never reallocates them. The rail
-    // is sized by its own style box, and small enough to reallocate.
-    size(docCanvas, docW, body);
-    size(noteCanvas, W, body - NOTEBAR_H - MIN_PANE);
-    size(rail, RAIL_W, docH);
+    if (rail.width !== RAIL_W) rail.width = RAIL_W;
+    if (rail.height !== docH) rail.height = docH;
     if (docLayer.style.width !== docW + 'px') { docLayer.style.width = docW + 'px'; rowBoxes = []; heights = []; measure(); }
     clampScroll();
-    timed('redraw', function () { redrawDoc(); redrawNote(); redrawRail(); });
+    if (openMark) showNote();
+    redrawRail();
     status();
   }
 
-  // Assigning a canvas size clears and reallocates it even when the size is unchanged.
-  function size(canvas, w, h) {
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
-  }
-
-  // The fragment is moved, not copied, so a document keeps its layout between visits.
+  // The fragment is moved, not copied, so a document keeps its layout, and its ink tiles,
+  // between visits.
   function showDocument(index) {
     while (docLayer.firstChild) store.appendChild(docLayer.firstChild);
     cur = index;
@@ -127,7 +134,7 @@
     scrolls[cur] = Math.max(0, Math.min(scrolls[cur], maxScroll()));
     docLayer.style.top = -scrolls[cur] + 'px';
   }
-  function scrollTo(y) { scrolls[cur] = Math.round(y); clampScroll(); redrawDoc(); redrawRail(); status(); }
+  function scrollTo(y) { scrolls[cur] = Math.round(y); clampScroll(); redrawRail(); }
 
   function status(text) {
     var t = doc().title;
@@ -144,30 +151,68 @@
     el('toolHand').className = tool === 'hand' ? 'on' : '';
   }
 
-  // ── Drawing ─────────────────────────────────────────────────────────────
-
-  function docToScreen(p) { return { x: p.x, y: p.y - scrolls[cur] }; }
-  function screenToDoc(s) { return { x: Math.round(s.x), y: Math.round(s.y + scrolls[cur]) }; }
-  function noteToScreen(p) { return { x: p.x, y: p.y - openMark.noteScroll }; }
-  function screenToNote(s) { return { x: Math.round(s.x), y: Math.round(s.y + openMark.noteScroll) }; }
+  // ── Ink tiles ───────────────────────────────────────────────────────────
 
   function pen(ctx) { ctx.strokeStyle = '#000'; ctx.fillStyle = '#000'; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; }
 
-  function segment(ctx, a, b, p, extra) {
-    ctx.lineWidth = inkWidth(p) + (extra || 0);
+  function tileCanvas(parent, index, width) {
+    var c = document.createElement('canvas');
+    c.width = width; c.height = TILE;
+    c.style.position = 'absolute'; c.style.left = '0px'; c.style.top = (index * TILE) + 'px';
+    parent.appendChild(c);
+    return c.getContext('2d');
+  }
+
+  // Calls draw(ctx) in document (or note) coordinates on every tile the band y0..y1 touches,
+  // creating tiles on demand; make(index) creates one.
+  function onTiles(tiles, make, y0, y1, draw) {
+    for (var t = Math.max(0, Math.floor(y0 / TILE)); t <= Math.floor(Math.max(y0, y1) / TILE); t++) {
+      if (!tiles[t]) tiles[t] = make(t);
+      var ctx = tiles[t];
+      ctx.save();
+      ctx.translate(0, -t * TILE);
+      pen(ctx);
+      draw(ctx);
+      ctx.restore();
+    }
+  }
+
+  function onDoc(di, y0, y1, draw) {
+    if (!docTiles[di]) docTiles[di] = [];
+    onTiles(docTiles[di], function (t) { return tileCanvas(el('doc-' + di), t, docW); }, y0, y1, draw);
+  }
+
+  // A new note tile gets its ruled lines and whatever ink of the open note falls on it.
+  function makeNoteTile(t) {
+    var ctx = tileCanvas(noteLayer, t, W);
+    ctx.fillStyle = '#bbb';
+    for (var y = (RULE - (t * TILE) % RULE) % RULE; y < TILE; y += RULE) ctx.fillRect(0, y, W, 1);
+    ctx.save();
+    ctx.translate(0, -t * TILE);
+    pen(ctx);
+    for (var s = 0; s < openMark.note.length; s++) {
+      var b = boundsOf(openMark.note[s]);
+      if (b.y1 >= t * TILE - 6 && b.y0 <= (t + 1) * TILE + 6) drawStroke(ctx, openMark.note[s]);
+    }
+    ctx.restore();
+    return ctx;
+  }
+
+  function onNote(y0, y1, draw) { onTiles(noteTiles, makeNoteTile, y0, y1, draw); }
+
+  function segment(ctx, a, b, p) {
+    ctx.lineWidth = inkWidth(p);
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x === a.x && b.y === a.y ? b.x + 0.5 : b.x, b.y); ctx.stroke();
   }
 
-  // Consecutive segments of the same width, rounded to half a pixel, share one path: a
-  // stroke() per segment costs the tablet's canvas milliseconds each, and a note has hundreds.
-  function drawStroke(ctx, pts, toScreen, extra) {
+  // Consecutive segments of the same width, rounded to half a pixel, share one path.
+  function drawStroke(ctx, pts) {
     if (!pts.length) return;
-    var a = toScreen(pts[0]);
-    if (pts.length === 1) { segment(ctx, a, a, pts[0].p, extra); return; }
+    var a = pts[0];
+    if (pts.length === 1) { segment(ctx, a, a, a.p); return; }
     var width = null;
     for (var i = 1; i < pts.length; i++) {
-      var b = toScreen(pts[i]);
-      var w = Math.round(inkWidth(pts[i].p) * 2) / 2 + (extra || 0);
+      var b = pts[i], w = Math.round(inkWidth(b.p) * 2) / 2;
       if (w !== width) {
         if (width !== null) ctx.stroke();
         ctx.lineWidth = w;
@@ -181,19 +226,21 @@
     ctx.stroke();
   }
 
-  function timed(name, fn) {
-    var t = now();
-    fn();
-    var ms = now() - t;
-    if (ms > 150 && window.console) console.log(name + ' took ' + ms + ' ms');
+  function boundsOf(pts) {
+    var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 };
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (p.x < b.x0) b.x0 = p.x; if (p.y < b.y0) b.y0 = p.y;
+      if (p.x > b.x1) b.x1 = p.x; if (p.y > b.y1) b.y1 = p.y;
+    }
+    return b;
   }
 
   function bbox(mark) {
     var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 };
-    for (var s = 0; s < mark.ink.length; s++) for (var i = 0; i < mark.ink[s].length; i++) {
-      var p = mark.ink[s][i];
-      if (p.x < b.x0) b.x0 = p.x; if (p.y < b.y0) b.y0 = p.y;
-      if (p.x > b.x1) b.x1 = p.x; if (p.y > b.y1) b.y1 = p.y;
+    for (var s = 0; s < mark.ink.length; s++) {
+      var o = boundsOf(mark.ink[s]);
+      b.x0 = Math.min(b.x0, o.x0); b.y0 = Math.min(b.y0, o.y0); b.x1 = Math.max(b.x1, o.x1); b.y1 = Math.max(b.y1, o.y1);
     }
     return b;
   }
@@ -207,37 +254,65 @@
     if (stamp === 'ask') { ctx.font = 'bold 22px sans-serif'; ctx.fillText('?', x + 5, y + 21); }
   }
 
-  function redrawDoc() {
-    docCtx.clearRect(0, 0, docCanvas.width, docCanvas.height);
+  // The number badge and stamp sit above a mark's top-left corner.
+  function drawBadge(mark) {
+    var b = bbox(mark), n = num(mark), bx = Math.max(0, b.x0 - 30), by = b.y0 - 30;
+    onDoc(docIndex(mark.doc), by, by + 28, function (ctx) {
+      ctx.clearRect(bx, by, 60, 28);
+      ctx.fillRect(bx, by, 28, 28);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 19px sans-serif';
+      ctx.fillText(String(n), bx + (n > 9 ? 3 : 8), by + 21);
+      pen(ctx);
+      drawStamp(ctx, mark.stamp, bx + 32, by + 2);
+    });
+  }
+
+  function drawMarkInk(mark, stroke) {
+    var b = boundsOf(stroke);
+    onDoc(docIndex(mark.doc), b.y0 - 6, b.y1 + 6, function (ctx) { drawStroke(ctx, stroke); });
+  }
+
+  function redrawDocInk(di) {
+    var tiles = docTiles[di] || [];
+    for (var t = 0; t < tiles.length; t++) if (tiles[t]) tiles[t].clearRect(0, 0, docW, TILE);
     for (var m = 0; m < marks.length; m++) {
-      var mark = marks[m];
-      if (mark.doc !== doc().id) continue;
-      pen(docCtx);
-      for (var s = 0; s < mark.ink.length; s++) drawStroke(docCtx, mark.ink[s], docToScreen, mark === openMark ? 0.8 : 0);
-      var b = bbox(mark), tl = docToScreen({ x: b.x0, y: b.y0 });
-      var bx = Math.max(0, tl.x - 30), by = tl.y - 30;
-      docCtx.fillRect(bx, by, 28, 28);
-      docCtx.fillStyle = '#fff'; docCtx.font = 'bold 19px sans-serif';
-      docCtx.fillText(String(m + 1), bx + (m + 1 > 9 ? 3 : 8), by + 21);
-      pen(docCtx);
-      drawStamp(docCtx, mark.stamp, bx + 32, by + 2);
+      if (docIndex(marks[m].doc) !== di) continue;
+      for (var s = 0; s < marks[m].ink.length; s++) drawMarkInk(marks[m], marks[m].ink[s]);
+      drawBadge(marks[m]);
+    }
+  }
+
+  // Numbers shift when a mark goes or comes back, in every document that has ink.
+  function redrawAllInk() {
+    timed('redraw ink', function () { for (var di = 0; di < R.docs.length; di++) if (docTiles[di]) redrawDocInk(di); });
+    redrawRail();
+    status();
+  }
+
+  // Builds the note's tiles for the open mark, or only the ones newly scrolled into view.
+  function showNote() {
+    if (noteShown !== openMark) {
+      noteLayer.innerHTML = '';
+      noteTiles = [];
+      noteShown = openMark;
+    }
+    noteLayer.style.top = -openMark.noteScroll + 'px';
+    noteLayer.style.width = W + 'px';
+    for (var t = Math.floor(openMark.noteScroll / TILE); t <= Math.floor((openMark.noteScroll + notePaneH) / TILE); t++) {
+      if (!noteTiles[t]) noteTiles[t] = makeNoteTile(t);
     }
   }
 
   function redrawNote() {
-    if (!openMark) return;
-    noteCtx.clearRect(0, 0, noteCanvas.width, noteCanvas.height);
-    noteCtx.fillStyle = '#bbb';
-    for (var y = 60 - (openMark.noteScroll % 60); y < noteCanvas.height; y += 60) noteCtx.fillRect(0, y, W, 1);
-    pen(noteCtx);
-    for (var s = 0; s < openMark.note.length; s++) drawStroke(noteCtx, openMark.note[s], noteToScreen, 0);
+    noteShown = null;
+    if (openMark) timed('redraw note', showNote);
   }
 
   // The rail maps the whole document onto the pane's height: the view as a frame, marks as
   // numbered tabs at their place, so earlier marks are one tap away.
   function redrawRail() {
-    var h = rail.height, total = Math.max(heights[cur] || 1, 1);
-    railCtx.clearRect(0, 0, RAIL_W, h);
+    var h = docH, total = Math.max(heights[cur] || 1, 1);
+    railCtx.clearRect(0, 0, RAIL_W, rail.height);
     railCtx.fillStyle = '#ccc';
     railCtx.fillRect(3, Math.round(scrolls[cur] / total * h), RAIL_W - 6, Math.max(8, Math.round(docH / total * h)));
     for (var m = 0; m < marks.length; m++) {
@@ -312,21 +387,21 @@
     var list = openMark.note;
     for (var i = list.length - 1; i >= 0; i--) {
       if (!strokeHit(list[i], p)) continue;
-      pushUndo(restoreStroke(list, list.splice(i, 1)[0], i, redrawNote));
+      pushUndo(restoreNoteStroke(openMark, list.splice(i, 1)[0], i));
       redrawNote(); scheduleSave();
       return;
     }
   }
 
-  function restoreStroke(list, stroke, at, redraw) {
-    return function () { list.splice(at, 0, stroke); redraw(); };
+  function restoreNoteStroke(mark, stroke, at) {
+    return function () { mark.note.splice(at, 0, stroke); if (openMark === mark) redrawNote(); };
   }
 
   function restoreMarkStroke(mark, stroke, at, markAt) {
     return function () {
       mark.ink.splice(at, 0, stroke);
       if (num(mark) === 0) marks.splice(markAt, 0, mark);
-      redrawDoc(); redrawRail(); status();
+      redrawAllInk();
     };
   }
 
@@ -342,7 +417,7 @@
           if (openMark === mark) { openMark = null; layout(); }
         }
         pushUndo(undo);
-        redrawDoc(); redrawRail(); status(); scheduleSave();
+        redrawAllInk(); scheduleSave();
         return;
       }
     }
@@ -362,54 +437,54 @@
   function targetAt(x, y) {
     var hit = document.elementFromPoint(x, y);
     if (!hit || filesView.style.display === 'block') return null;
-    if (hit === docCanvas) return 'doc';
-    if (hit === noteCanvas && openMark) return 'note';
     if (hit === rail) return 'rail';
+    if (inside(hit, docPane)) return 'doc';
+    if (openMark && inside(hit, notePane)) return 'note';
     if (hit.tagName !== 'BUTTON' && (hit === noteBar || hit.parentNode === noteBar)) return 'grip';
     return null;
   }
 
-  function local(target, x, y) {
-    if (target === 'note') return { x: x, y: y - (docH + NOTEBAR_H) };
-    return { x: x, y: y };
+  // Document or note coordinates of a viewport point.
+  function toInk(target, x, y) {
+    if (target === 'note') return { x: Math.round(x), y: Math.round(y - (docH + NOTEBAR_H) + openMark.noteScroll) };
+    return { x: Math.round(x), y: Math.round(y + scrolls[cur]) };
   }
 
   function begin(x, y, p, eraser) {
     var target = targetAt(x, y);
     if (!target) return '';
     if (active) end();
-    var s = local(target, x, y);
     var action = target === 'rail' || target === 'grip' ? target : tool === 'hand' ? 'hand' : eraser || tool === 'eraser' ? 'erase' : 'ink';
-    active = { target: target, action: action, pts: [], last: s, startY: y, moved: 0, startScroll: target === 'note' ? openMark.noteScroll : scrolls[cur], startNoteH: noteH };
-    if (action === 'ink') active.pts.push(point(target, s, p));
+    active = { target: target, action: action, pts: [], drawn: false, lastY: y, startY: y, moved: 0, startScroll: target === 'note' ? openMark.noteScroll : scrolls[cur], startNoteH: noteH };
+    if (action === 'ink') active.pts.push(inkPoint(target, x, y, p));
     else extend(x, y, p);
     return action === 'ink' ? 'ink' : 'stream';
   }
 
-  function point(target, s, p) {
-    var q = target === 'doc' ? screenToDoc(s) : screenToNote(s);
+  function inkPoint(target, x, y, p) {
+    var q = toInk(target, x, y);
     if (p !== undefined && p !== null) q.p = p;
     return q;
   }
 
   function extend(x, y, p, quiet) {
     if (!active) return;
-    var s = local(active.target, x, y), dy = y - active.startY;
+    var dy = y - active.startY;
     active.moved = Math.max(active.moved, Math.abs(dy));
     if (active.action === 'ink') {
-      var q = point(active.target, s, p);
-      if (!quiet) {
-        var ctx = active.target === 'doc' ? docCtx : noteCtx;
-        pen(ctx);
-        segment(ctx, active.last, s, q.p, 0);
-      }
+      var q = inkPoint(active.target, x, y, p), last = active.pts[active.pts.length - 1];
       active.pts.push(q);
-      active.last = s;
+      if (quiet) return;
+      active.drawn = true;
+      var draw = function (ctx) { segment(ctx, last, q, q.p); };
+      if (active.target === 'doc') onDoc(cur, Math.min(last.y, q.y) - 6, Math.max(last.y, q.y) + 6, draw);
+      else onNote(Math.min(last.y, q.y) - 6, Math.max(last.y, q.y) + 6, draw);
     } else if (active.action === 'erase') {
-      if (active.target === 'doc') eraseDoc(screenToDoc(s)); else eraseNote(screenToNote(s));
+      var e = toInk(active.target, x, y);
+      if (active.target === 'doc') eraseDoc(e); else eraseNote(e);
     } else if (active.action === 'hand') {
       if (active.target === 'doc') scrollTo(active.startScroll - dy);
-      else { openMark.noteScroll = Math.max(0, Math.round(active.startScroll - dy)); redrawNote(); }
+      else { openMark.noteScroll = Math.max(0, Math.round(active.startScroll - dy)); showNote(); }
     } else if (active.action === 'rail') {
       scrollTo(Math.max(0, Math.min(1, y / docH)) * (heights[cur] || 0) - docH / 2);
     } else if (active.action === 'grip') {
@@ -428,34 +503,41 @@
     var g = active;
     active = null;
     if (g && g.action === 'hand' && g.target === 'doc' && g.moved < TAP_MAX) {
-      var tapped = hitMark(screenToDoc(g.last));
+      var tapped = hitMark(toInk('doc', 0, g.startY));
       if (tapped && tapped !== openMark) openNote(tapped);
       return;
     }
     if (!g || g.action !== 'ink') return;
+    var stroke = g.pts;
     if (g.target === 'note') {
-      var list = openMark.note, stroke = g.pts;
-      list.push(stroke);
-      pushUndo(function () { removeItem(list, stroke); redrawNote(); });
+      var mark = openMark;
+      if (!g.drawn) { var nb = boundsOf(stroke); onNote(nb.y0 - 6, nb.y1 + 6, function (ctx) { drawStroke(ctx, stroke); }); }
+      mark.note.push(stroke);
+      pushUndo(function () { removeItem(mark.note, stroke); if (openMark === mark) redrawNote(); });
       scheduleSave();
       return;
     }
-    if (pathLength(g.pts) < TAP_MAX) {
-      var hit = hitMark(g.pts[0]);
-      if (hit && hit !== openMark) openNote(hit); else redrawDoc();
+    if (pathLength(stroke) < TAP_MAX) {
+      if (g.drawn) redrawDocInk(cur);
+      var hit = hitMark(stroke[0]);
+      if (hit && hit !== openMark) openNote(hit);
       return;
     }
     if (openMark) {
-      var ink = openMark.ink, s2 = g.pts;
-      ink.push(s2);
-      pushUndo(function () { removeItem(ink, s2); redrawDoc(); redrawRail(); });
-      redrawDoc(); redrawRail(); scheduleSave();
+      var target = openMark;
+      target.ink.push(stroke);
+      if (!g.drawn) drawMarkInk(target, stroke);
+      drawBadge(target);
+      pushUndo(function () { removeItem(target.ink, stroke); redrawAllInk(); });
+      redrawRail(); scheduleSave();
       return;
     }
-    var mark = { id: newId(), doc: doc().id, ink: [g.pts], note: [], noteScroll: 0, stamp: null };
-    marks.push(mark);
-    pushUndo(function () { removeItem(marks, mark); if (openMark === mark) openMark = null; layout(); });
-    openNote(mark);
+    var created = { id: newId(), doc: doc().id, ink: [stroke], note: [], noteScroll: 0, stamp: null };
+    marks.push(created);
+    if (!g.drawn) drawMarkInk(created, stroke);
+    drawBadge(created);
+    pushUndo(function () { removeItem(marks, created); if (openMark === created) openMark = null; redrawAllInk(); layout(); });
+    openNote(created);
     scheduleSave();
   }
 
@@ -467,14 +549,9 @@
     over: function (x, y) { return !!targetAt(x, y); },
     down: function (x, y, p) { return begin(x, y, p, false); },
     move: function (points) { for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], points[i][2]); },
-    // The app has drawn this stroke already; the page adds it and draws it once.
     stroke: function (points) {
       if (!active) return;
       for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], points[i][2], true);
-      if (active.action === 'ink' && active.target === 'note') {
-        pen(noteCtx);
-        drawStroke(noteCtx, active.pts, noteToScreen, 0);
-      }
       timed('stroke end', end);
     },
     up: function () { end(); }
@@ -647,7 +724,7 @@
       if (!openMark) return;
       var s = this.getAttribute('data-stamp');
       openMark.stamp = openMark.stamp === s ? null : s;
-      redrawDoc(); status(); scheduleSave();
+      drawBadge(openMark); status(); scheduleSave();
     };
   }
   document.onkeydown = function (e) {
@@ -670,7 +747,10 @@
   }
 
   viewport();
-  docLayer.style.width = (W - RAIL_W) + 'px';
+  docW = W - RAIL_W;
+  docLayer.style.width = docW + 'px';
   showDocument(0);
   layout();
+  timed('draw saved ink', function () { for (var di = 0; di < R.docs.length; di++) redrawDocInk(di); });
+  redrawRail();
 })();

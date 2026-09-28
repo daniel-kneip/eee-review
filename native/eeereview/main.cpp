@@ -199,8 +199,10 @@ private:
         QTime clock;
         clock.start();
         QVariant r = page()->mainFrame()->evaluateJavaScript(script);
+        int ms = clock.elapsed();
         stats.js++;
-        stats.jsMs += clock.elapsed();
+        stats.jsMs += ms;
+        if (ms > 200) fprintf(stderr, "%s slow js %d ms: %s\n", stamp(), ms, qPrintable(script.left(40)));
         return r;
     }
 

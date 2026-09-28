@@ -97,12 +97,12 @@ function reviewPage(store, review) {
 <meta name="viewport" content="width=device-width"><title>${escapeHtml(review.title)}</title>
 <link rel="stylesheet" href="/web/review.css"></head>
 <body>
-<div class="pane" id="docPane"><div id="docLayer"></div><canvas id="docCanvas"></canvas></div>
+<div class="pane" id="docPane"><div id="docLayer"></div></div>
 <canvas id="rail"></canvas>
 <div class="bar" id="noteBar"><span id="grip">&#9776;</span><span id="noteTitle"></span>
 <button type="button" data-stamp="ok">OK</button><button type="button" data-stamp="no">Nein</button><button type="button" data-stamp="ask">?</button>
 <button type="button" id="askAgent">Frage</button><button type="button" id="noteClose">Schlie&szlig;en</button></div>
-<div class="pane" id="notePane"><canvas id="noteCanvas"></canvas></div>
+<div class="pane" id="notePane"><div id="noteLayer"></div></div>
 <div class="bar" id="toolBar"><button type="button" id="filesBtn">Dateien</button><button type="button" id="toolPen" class="on">Stift</button><button type="button" id="toolEraser">Radierer</button><button type="button" id="toolHand">Hand</button><button type="button" id="undo">&#8630;</button><span id="status"></span></div>
 <div id="files"></div>
 <div id="store" style="display:none">${store_}</div>
