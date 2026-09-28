@@ -42,19 +42,32 @@ public slots:
     }
 };
 
-// What the pages may ask of the app, as window.eeeApp: only to quit, back to the launcher.
+// What the pages may ask of the app, as window.eeeApp: to quit, back to the launcher, and
+// to look for a hub again.
 class AppBridge : public QObject {
     Q_OBJECT
 public slots:
     void quit() { qApp->quit(); }
+    void retry() { emit retryRequested(); }
+signals:
+    void retryRequested();
 };
+
+// Shown when no hub answers, so the app never sits on a page load that cannot finish.
+static const char *UNREACHABLE =
+    "<html><body style='font-family:sans-serif;margin:40px'><h1 style='font-size:26px'>Kein Hub erreichbar</h1>"
+    "<p style='font-size:19px'>Der Hub auf dem Laptop antwortet weder über das USB-Kabel noch über WLAN. "
+    "Läuft <code>eee-review hub</code>, und steckt das Kabel?</p>"
+    "<p><button style='font-size:22px;padding:8px 24px;margin-right:16px' onclick='eeeApp.retry()'>Nochmal</button>"
+    "<button style='font-size:22px;padding:8px 24px' onclick='eeeApp.quit()'>Beenden</button></p></body></html>";
 
 class ReviewView : public QWebView {
     Q_OBJECT
 public:
-    ReviewView(const QStringList &list) : urls(list), tried(0), started(false), swallowing(false), pending(0) {
+    ReviewView(const QStringList &list) : urls(list), tried(0), attempts(0), started(false), swallowing(false), pending(0) {
         setPage(new LoggingPage(this));
         connect(page()->mainFrame(), SIGNAL(javaScriptWindowObjectCleared()), this, SLOT(exposeApp()));
+        connect(&bridge, SIGNAL(retryRequested()), this, SLOT(restart()));
         connect(this, SIGNAL(loadStarted()), this, SLOT(loading()));
         connect(this, SIGNAL(loadFinished(bool)), this, SLOT(loaded(bool)));
         connect(page()->networkAccessManager(), SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
@@ -76,18 +89,37 @@ public:
 
     // Each hub address is asked for its inbox before the page loads one, so the route is
     // settled once and every later page is on the same host.
+public slots:
     void start() {
         if (tried >= urls.size()) {
-            fprintf(stderr, "%s no hub reachable, showing the last address anyway\n", stamp());
-            load(QUrl(urls.last()));
+            fprintf(stderr, "%s no hub reachable\n", stamp());
+            setHtml(QString::fromUtf8(UNREACHABLE));
             return;
         }
         fprintf(stderr, "%s probing %s\n", stamp(), qPrintable(urls[tried]));
         pending = probe.get(QNetworkRequest(QUrl(urls[tried] + "api/ping")));
-        probeTimeout.start(4000);
+        probeTimeout.start(tried == 0 ? 2000 : 4000);
+    }
+
+    void restart() {
+        tried = 0;
+        attempts = 0;
+        start();
     }
 
 protected:
+    // Whatever the page does, these keys leave the app. Every key is logged, since which codes
+    // the tablet's buttons send is not documented anywhere.
+    void keyPressEvent(QKeyEvent *event) {
+        fprintf(stderr, "%s key 0x%x\n", stamp(), event->key());
+        if (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Back || event->key() == Qt::Key_Home ||
+            event->key() == Qt::Key_HomePage) {
+            qApp->quit();
+            return;
+        }
+        QWebView::keyPressEvent(event);
+    }
+
     // tslib delivers the same pen as mouse events. Over a canvas they would set WebKit
     // selecting text for every move, work the GUI thread cannot spare while ink is drawn,
     // so a press there is kept from WebKit until its release.
@@ -131,7 +163,14 @@ private slots:
             load(QUrl(urls[tried]));
         } else {
             fprintf(stderr, "%s no hub at %s: %s\n", stamp(), qPrintable(urls[tried]), qPrintable(reply->errorString()));
+            // The cable comes up a few seconds after start.sh loads the gadget, once the Mac has
+            // noticed the device and eeelink on both ends has connected, so it gets several tries.
+            if (tried == 0 && ++attempts < CABLE_ATTEMPTS) {
+                QTimer::singleShot(1000, this, SLOT(start()));
+                return;
+            }
             ++tried;
+            attempts = 0;
             start();
         }
     }
@@ -221,8 +260,10 @@ private:
         return buf;
     }
 
+    static const int CABLE_ATTEMPTS = 6;
     QStringList urls;
     int tried;
+    int attempts;
     bool started;
     bool swallowing;
     QNetworkAccessManager probe;
