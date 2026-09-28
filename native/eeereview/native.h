@@ -323,14 +323,14 @@ private slots:
         if (parts.size() == 2) {
             if (ok) loadReview(parseJson(data).toMap());
             else {
-                message = QString::fromUtf8("Nicht auf dem Tablet â dafÃ¼r muss der Hub erreichbar sein");
+                message = QString::fromUtf8("Nicht auf dem Tablet \xe2\x80\x93 daf\xc3\xbcr muss der Hub erreichbar sein");
                 update();
             }
             return;
         }
         int index = parts[2].toInt();
         if (parts[1].toInt() != round || index >= docs.size()) return;
-        if (!ok) status(QString::fromUtf8("Seiten fehlen â nicht auf dem Tablet"));
+        if (!ok) status(QString::fromUtf8("Seiten fehlen \xe2\x80\x93 nicht auf dem Tablet"));
         if (parts[3] == "index.json") {
             if (ok) loadIndex(index, parseJson(data).toMap());
         } else if (ok) loadStrip(index, parts[3].section('.', 0, 0).toInt(), data);
