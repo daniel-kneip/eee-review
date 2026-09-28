@@ -42,11 +42,19 @@ public slots:
     }
 };
 
+// What the pages may ask of the app, as window.eeeApp: only to quit, back to the launcher.
+class AppBridge : public QObject {
+    Q_OBJECT
+public slots:
+    void quit() { qApp->quit(); }
+};
+
 class ReviewView : public QWebView {
     Q_OBJECT
 public:
     ReviewView(const QStringList &list) : urls(list), tried(0), started(false), swallowing(false), pending(0) {
         setPage(new LoggingPage(this));
+        connect(page()->mainFrame(), SIGNAL(javaScriptWindowObjectCleared()), this, SLOT(exposeApp()));
         connect(this, SIGNAL(loadStarted()), this, SLOT(loading()));
         connect(this, SIGNAL(loadFinished(bool)), this, SLOT(loaded(bool)));
         connect(page()->networkAccessManager(), SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
@@ -112,6 +120,7 @@ protected:
     }
 
 private slots:
+    void exposeApp() { page()->mainFrame()->addToJavaScriptWindowObject("eeeApp", &bridge); }
     void probed(QNetworkReply *reply) {
         reply->deleteLater();
         if (reply != pending) return;
@@ -220,6 +229,7 @@ private:
     QNetworkReply *pending;
     QTimer probeTimeout;
     QTimer heartbeat;
+    AppBridge bridge;
     struct Stats {
         Stats() : paints(0), paintMs(0), paintArea(0), mouseMoves(0), penFrames(0), js(0), jsMs(0) {}
         int paints, paintMs, paintArea, mouseMoves, penFrames, js, jsMs;

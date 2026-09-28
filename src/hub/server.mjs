@@ -76,7 +76,9 @@ function inboxPage(store) {
 <html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="10">
 <title>Reviews</title><link rel="stylesheet" href="/web/inbox.css"></head>
-<body><h1>Reviews</h1>${items || '<p class="empty">Nichts offen. Neue Reviews erscheinen hier von selbst.</p>'}</body></html>`;
+<body><button type="button" id="quit" onclick="eeeApp.quit()">Beenden</button><h1>Reviews</h1>${
+    items || '<p class="empty">Nichts offen. Neue Reviews erscheinen hier von selbst.</p>'
+  }<script type="text/javascript">if (window.eeeApp) document.getElementById('quit').style.display = 'block';</script></body></html>`;
 }
 
 function reviewPage(store, review) {

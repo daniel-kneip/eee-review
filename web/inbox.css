@@ -30,6 +30,15 @@ h1 {
 .item.new {
   border-width: 6px;
 }
+#quit {
+  display: none;
+  float: right;
+  font-size: 20px;
+  padding: 6px 16px;
+  margin-top: 4px;
+  background: #fff;
+  border: 2px solid #000;
+}
 .empty {
   font-size: 20px;
   color: #444;

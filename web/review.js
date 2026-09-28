@@ -657,6 +657,7 @@
     html += button('An den Agenten senden (' + marks.length + ')', 'data-act="send"', 'wide send');
     html += button('Zur&uuml;ck', 'data-act="back"', 'wide');
     html += button('Alle Reviews', 'data-act="inbox"', 'wide');
+    if (window.eeeApp) html += button('App beenden', 'data-act="quit"', 'wide');
     filesView.innerHTML = html + '</div>';
     place(filesView, 0, 0, W, H - TOOLBAR_H);
     filesView.style.overflowY = 'auto';
@@ -668,6 +669,7 @@
     var act = this.getAttribute('data-act'), jump = this.getAttribute('data-jump'), to = this.getAttribute('data-doc');
     if (act === 'send') return submit();
     if (act === 'inbox') { window.location.href = '/'; return; }
+    if (act === 'quit') { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; post('/api/r/' + R.id + '/draft', { marks: packMarks() }, function () { window.eeeApp.quit(); }); } else window.eeeApp.quit(); return; }
     if (act === 'back') { filesView.style.display = 'none'; return; }
     if (jump !== null) { go(Number(jump), lineAtView()); return; }
     go(Number(to));
