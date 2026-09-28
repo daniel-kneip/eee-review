@@ -10,6 +10,10 @@
 // OPEN carries the port to connect to at the other end, DATA carries bytes, CLOSE ends a
 // channel. Channels the tablet opens have the high bit clear, the Mac's have it set.
 //
+// g_serial has no flow control towards the tablet: it hands every packet to the tty, whose
+// buffers hold about 64 KB, and drops what does not fit. So the tablet ACKs the bytes it has
+// read (channel 0, a u32 BE count), and the Mac keeps at most WINDOW bytes unacknowledged.
+//
 //   tablet:  eeelink [listen-port:remote-port ...]      default 8770:8770  (app -> hub)
 //   mac:     eeelink [listen-port:remote-port ...]      default 2323:23    (telnet over USB)
 //
@@ -34,11 +38,13 @@
 #include <pthread.h>
 #endif
 
-enum { OPEN = 1, DATA = 2, CLOSE = 3 };
+enum { OPEN = 1, DATA = 2, CLOSE = 3, ACK = 4 };
 #define MAGIC 0xEE
 #define MAX_CHANNELS 64
 #define MAX_FORWARDS 8
 #define MAX_PAYLOAD 4096
+#define WINDOW (32 * 1024)
+#define ACK_EVERY (8 * 1024)
 
 struct channel { int id, fd; };
 struct forward { int listen_port, remote_port, fd; };
@@ -47,6 +53,9 @@ static struct channel channels[MAX_CHANNELS];
 static struct forward forwards[MAX_FORWARDS];
 static int forward_count = 0;
 static int next_channel = 1;
+
+static int in_flight = 0;   // Mac: bytes sent that the tablet has not ACKed yet
+static int unacked = 0;     // tablet: bytes read that it has not ACKed yet
 
 static int debug = 0;
 static void logf_(const char *msg, int a) { fprintf(stderr, "eeelink: %s %d\n", msg, a); }
@@ -156,6 +165,9 @@ static int send_frame(int type, int id, const unsigned char *payload, int len) {
     unsigned char frame[6 + MAX_PAYLOAD] = { MAGIC, (unsigned char)type, (unsigned char)(id >> 8), (unsigned char)id,
                                              (unsigned char)(len >> 8), (unsigned char)len };
     if (len) memcpy(frame + 6, payload, len);
+#ifdef EEELINK_HOST
+    in_flight += 6 + len;
+#endif
     return link_write(frame, 6 + len);
 }
 
@@ -228,6 +240,9 @@ static void handle_frame(int type, int id, const unsigned char *p, int len) {
         }
     } else if (type == CLOSE) {
         drop(find(id), 0);
+    } else if (type == ACK && len == 4) {
+        in_flight -= (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
+        if (in_flight < 0) in_flight = 0;
     }
 }
 
@@ -236,6 +251,15 @@ static int pump_link(void) {
     int n = read(link_read_fd(), inbuf + inlen, sizeof inbuf - inlen);
     if (n <= 0) return -1;
     inlen += n;
+#ifndef EEELINK_HOST
+    unacked += n;
+    if (unacked >= ACK_EVERY) {
+        unsigned char count[4] = { (unsigned char)(unacked >> 24), (unsigned char)(unacked >> 16),
+                                   (unsigned char)(unacked >> 8), (unsigned char)unacked };
+        unacked = 0;
+        if (send_frame(ACK, 0, count, 4)) return -1;
+    }
+#endif
     int off = 0;
     while (inlen - off >= 6) {
         if (inbuf[off] != MAGIC) { off++; continue; }
@@ -261,8 +285,9 @@ static void serve(void) {
             FD_SET(forwards[i].fd, &rd);
             if (forwards[i].fd > top) top = forwards[i].fd;
         }
+        int room = in_flight + 6 + MAX_PAYLOAD <= WINDOW;
         for (int i = 0; i < MAX_CHANNELS; i++) {
-            if (channels[i].fd < 0) continue;
+            if (channels[i].fd < 0 || !room) continue;
             FD_SET(channels[i].fd, &rd);
             if (channels[i].fd > top) top = channels[i].fd;
         }
@@ -284,6 +309,7 @@ static void serve(void) {
         unsigned char buf[MAX_PAYLOAD];
         for (int i = 0; i < MAX_CHANNELS; i++) {
             if (channels[i].fd < 0 || !FD_ISSET(channels[i].fd, &rd)) continue;
+            if (in_flight + 6 + MAX_PAYLOAD > WINDOW) break;
             int n = read(channels[i].fd, buf, sizeof buf);
             if (n <= 0) drop(&channels[i], 1);
             else if (send_frame(DATA, channels[i].id, buf, n)) return;
@@ -294,6 +320,8 @@ static void serve(void) {
 static void reset_channels(void) {
     for (int i = 0; i < MAX_CHANNELS; i++) if (channels[i].fd >= 0) { close(channels[i].fd); channels[i].fd = -1; }
     inlen = 0;
+    in_flight = 0;
+    unacked = 0;
 }
 
 int main(int argc, char **argv) {

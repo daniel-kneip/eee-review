@@ -149,7 +149,7 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
     const url = new URL(req.url, 'http://hub');
     const p = url.pathname;
     let m;
-    if (process.env.EEE_REVIEW_DEBUG) log(req.method, p, 'from', req.socket.remoteAddress);
+    if (process.env.EEE_REVIEW_DEBUG) log(req.method, p, 'from', req.socket.remoteAddress, req.headers['accept-encoding'] ?? '-');
     try {
       if (req.method === 'GET' && p === '/api/ping') return json(req, res, { ok: true });
       if (req.method === 'GET' && p === '/') return send(req, res, inboxPage(store));
