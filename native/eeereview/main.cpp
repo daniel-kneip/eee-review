@@ -16,6 +16,9 @@
 
 #include "../common/pen.h"
 
+// Matches INK_WIDTH in web/review.js.
+static const int INK_WIDTH = 2;
+
 // Ink is drawn here, over the page, while the pen is down, and the page gets the stroke
 // whole when it lifts: one evaluateJavaScript per stroke instead of per point, which on
 // this CPU is what kept the ink trailing the pen.
@@ -104,10 +107,8 @@ protected:
         QPainter painter(this);
         painter.setClipRect(event->rect());
         painter.setRenderHint(QPainter::Antialiasing);
-        for (int i = 1; i < ink.size(); ++i) {
-            painter.setPen(QPen(Qt::black, inkWidth(pressures[i]), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.drawLine(ink[i - 1], ink[i]);
-        }
+        painter.setPen(QPen(Qt::black, INK_WIDTH, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPolyline(ink.constData(), ink.size());
     }
 
 private slots:
@@ -142,23 +143,21 @@ private slots:
     void loaded(bool ok) {
         fprintf(stderr, "%s loaded %s: %s\n", stamp(), qPrintable(url().toString()), ok ? "ok" : "failed");
     }
-    void penDown(int x, int y, int pressure, qint64) {
+    void penDown(int x, int y, int, qint64) {
         QPoint p = toView(x, y);
-        mode = run(QString("window.pen ? pen.down(%1, %2, %3) : ''").arg(p.x()).arg(p.y()).arg(pressure)).toString();
+        mode = run(QString("window.pen ? pen.down(%1, %2) : ''").arg(p.x()).arg(p.y())).toString();
         ink.clear();
-        pressures.clear();
         streaming.clear();
-        if (mode == "ink") { ink << p; pressures << pressure; }
+        if (mode == "ink") ink << p;
         else if (mode == "stream") streamBatch.start();
     }
-    void penMoved(int x, int y, int pressure, qint64) {
+    void penMoved(int x, int y, int, qint64) {
         stats.penFrames++;
         QPoint p = toView(x, y);
         if (mode == "stream") streaming << p;
         if (mode != "ink" || p == ink.last()) return;
         QPoint last = ink.last();
         ink << p;
-        pressures << pressure;
         dirty |= QRect(last, p).normalized().adjusted(-4, -4, 4, 4);
     }
     void showInk() {
@@ -168,12 +167,9 @@ private slots:
     }
     void penUp() {
         if (mode == "ink") {
-            QStringList out;
-            for (int i = 1; i < ink.size(); ++i) out << QString("[%1,%2,%3]").arg(ink[i].x()).arg(ink[i].y()).arg(pressures[i]);
-            run("pen.stroke([" + out.join(",") + "])");
+            run("pen.stroke(" + points(ink.mid(1)) + ")");
             QRect dirty = QPolygon(ink).boundingRect().adjusted(-4, -4, 4, 4);
             ink.clear();
-            pressures.clear();
             update(dirty);
         } else if (mode == "stream") {
             streamBatch.stop();
@@ -209,7 +205,6 @@ private:
     Calibration calibration;
     QString mode;
     QVector<QPoint> ink, streaming;
-    QVector<int> pressures;
     QRect dirty;
     static const char *stamp() {
         static char buf[16];

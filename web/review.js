@@ -16,8 +16,9 @@
 (function () {
   var TOOLBAR_H = 54, NOTEBAR_H = 54, RAIL_W = 38, MIN_PANE = 120, TILE = 512, RULE = 60;
   var TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800;
-  // Mirrors PRESSURE_KNOTS in src/render/ink.mjs and native/common/pen.h.
-  var KNOTS = [[0, 0.3], [100, 1.1], [200, 1.7], [235, 4.5]];
+  // Matches INK_WIDTH in native/eeereview/main.cpp, so a stroke keeps its look when the page
+  // takes it over from the app.
+  var INK_WIDTH = 2;
   var KIND_LABEL = { spec: 'Dokument', diff: 'Diff', file: 'Datei', replies: 'Antworten' };
 
   var R = window.REVIEW;
@@ -45,18 +46,6 @@
   function doc() { return R.docs[cur]; }
   function docIndex(id) { for (var i = 0; i < R.docs.length; i++) if (R.docs[i].id === id) return i; return -1; }
   function inside(node, parent) { while (node) { if (node === parent) return true; node = node.parentNode; } return false; }
-
-  function inkWidth(p) {
-    if (p === undefined || p === null) return 2;
-    if (p <= KNOTS[0][0]) return KNOTS[0][1];
-    for (var i = 1; i < KNOTS.length; i++) {
-      if (p <= KNOTS[i][0]) {
-        var t = (p - KNOTS[i - 1][0]) / (KNOTS[i][0] - KNOTS[i - 1][0]);
-        return KNOTS[i - 1][1] + t * (KNOTS[i][1] - KNOTS[i - 1][1]);
-      }
-    }
-    return KNOTS[KNOTS.length - 1][1];
-  }
 
   function timed(name, fn) {
     var t = now();
@@ -153,7 +142,7 @@
 
   // ── Ink tiles ───────────────────────────────────────────────────────────
 
-  function pen(ctx) { ctx.strokeStyle = '#000'; ctx.fillStyle = '#000'; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; }
+  function pen(ctx) { ctx.strokeStyle = '#000'; ctx.fillStyle = '#000'; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = INK_WIDTH; }
 
   function tileCanvas(parent, index, width) {
     var c = document.createElement('canvas');
@@ -200,29 +189,16 @@
 
   function onNote(y0, y1, draw) { onTiles(noteTiles, makeNoteTile, y0, y1, draw); }
 
-  function segment(ctx, a, b, p) {
-    ctx.lineWidth = inkWidth(p);
+  function segment(ctx, a, b) {
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x === a.x && b.y === a.y ? b.x + 0.5 : b.x, b.y); ctx.stroke();
   }
 
-  // Consecutive segments of the same width, rounded to half a pixel, share one path.
   function drawStroke(ctx, pts) {
     if (!pts.length) return;
-    var a = pts[0];
-    if (pts.length === 1) { segment(ctx, a, a, a.p); return; }
-    var width = null;
-    for (var i = 1; i < pts.length; i++) {
-      var b = pts[i], w = Math.round(inkWidth(b.p) * 2) / 2;
-      if (w !== width) {
-        if (width !== null) ctx.stroke();
-        ctx.lineWidth = w;
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        width = w;
-      }
-      ctx.lineTo(b.x, b.y);
-      a = b;
-    }
+    if (pts.length === 1) { segment(ctx, pts[0], pts[0]); return; }
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
   }
 
@@ -450,33 +426,27 @@
     return { x: Math.round(x), y: Math.round(y + scrolls[cur]) };
   }
 
-  function begin(x, y, p, eraser) {
+  function begin(x, y, eraser) {
     var target = targetAt(x, y);
     if (!target) return '';
     if (active) end();
     var action = target === 'rail' || target === 'grip' ? target : tool === 'hand' ? 'hand' : eraser || tool === 'eraser' ? 'erase' : 'ink';
     active = { target: target, action: action, pts: [], drawn: false, lastY: y, startY: y, moved: 0, startScroll: target === 'note' ? openMark.noteScroll : scrolls[cur], startNoteH: noteH };
-    if (action === 'ink') active.pts.push(inkPoint(target, x, y, p));
-    else extend(x, y, p);
+    if (action === 'ink') active.pts.push(toInk(target, x, y));
+    else extend(x, y);
     return action === 'ink' ? 'ink' : 'stream';
   }
 
-  function inkPoint(target, x, y, p) {
-    var q = toInk(target, x, y);
-    if (p !== undefined && p !== null) q.p = p;
-    return q;
-  }
-
-  function extend(x, y, p, quiet) {
+  function extend(x, y, quiet) {
     if (!active) return;
     var dy = y - active.startY;
     active.moved = Math.max(active.moved, Math.abs(dy));
     if (active.action === 'ink') {
-      var q = inkPoint(active.target, x, y, p), last = active.pts[active.pts.length - 1];
+      var q = toInk(active.target, x, y), last = active.pts[active.pts.length - 1];
       active.pts.push(q);
       if (quiet) return;
       active.drawn = true;
-      var draw = function (ctx) { segment(ctx, last, q, q.p); };
+      var draw = function (ctx) { segment(ctx, last, q); };
       if (active.target === 'doc') onDoc(cur, Math.min(last.y, q.y) - 6, Math.max(last.y, q.y) + 6, draw);
       else onNote(Math.min(last.y, q.y) - 6, Math.max(last.y, q.y) + 6, draw);
     } else if (active.action === 'erase') {
@@ -547,11 +517,11 @@
   // erasing, scrolling and dragging, which have to act under the pen.
   window.pen = {
     over: function (x, y) { return !!targetAt(x, y); },
-    down: function (x, y, p) { return begin(x, y, p, false); },
-    move: function (points) { for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], points[i][2]); },
+    down: function (x, y) { return begin(x, y, false); },
+    move: function (points) { for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1]); },
     stroke: function (points) {
       if (!active) return;
-      for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], points[i][2], true);
+      for (var i = 0; i < points.length; i++) extend(points[i][0], points[i][1], true);
       timed('stroke end', end);
     },
     up: function () { end(); }
@@ -559,10 +529,10 @@
 
   var mouseDown = false;
   docPane.parentNode.addEventListener('mousedown', function (e) {
-    if (begin(e.clientX, e.clientY, undefined, e.button === 2)) { mouseDown = true; e.preventDefault(); }
+    if (begin(e.clientX, e.clientY, e.button === 2)) { mouseDown = true; e.preventDefault(); }
   }, false);
   document.addEventListener('mousemove', function (e) {
-    if (mouseDown) { extend(e.clientX, e.clientY, undefined); e.preventDefault(); }
+    if (mouseDown) { extend(e.clientX, e.clientY); e.preventDefault(); }
   }, false);
   document.addEventListener('mouseup', function () { if (mouseDown) { mouseDown = false; end(); } }, false);
   document.oncontextmenu = function () { return false; };
@@ -571,7 +541,7 @@
 
   function packStroke(pts) {
     var out = [];
-    for (var i = 0; i < pts.length; i++) out.push(pts[i].p === undefined ? [pts[i].x, pts[i].y] : [pts[i].x, pts[i].y, pts[i].p]);
+    for (var i = 0; i < pts.length; i++) out.push([pts[i].x, pts[i].y]);
     return out;
   }
   function packStrokes(list) { var out = []; for (var i = 0; i < list.length; i++) out.push(packStroke(list[i])); return out; }
@@ -585,11 +555,7 @@
     var out = [];
     for (var s = 0; s < (list || []).length; s++) {
       var pts = [];
-      for (var i = 0; i < list[s].length; i++) {
-        var q = { x: list[s][i][0], y: list[s][i][1] };
-        if (list[s][i].length > 2 && list[s][i][2] !== null) q.p = list[s][i][2];
-        pts.push(q);
-      }
+      for (var i = 0; i < list[s].length; i++) pts.push({ x: list[s][i][0], y: list[s][i][1] });
       out.push(pts);
     }
     return out;

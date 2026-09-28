@@ -72,7 +72,7 @@ protected:
 private:
     QRect segment(QPainter &painter, const InkPoint &a, const InkPoint &b) {
         QPoint from = toLocal(a), to = toLocal(b);
-        qreal width = inkWidth(b.pressure);
+        qreal width = 2.5;
         painter.setPen(QPen(Qt::black, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(from, to);
         int pad = int(width) + 2;

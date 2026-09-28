@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import zlib from 'node:zlib';
 import { startHub } from '../src/hub/server.mjs';
-import { inkWidth, strokesToPng } from '../src/render/ink.mjs';
+import { strokesToPng } from '../src/render/ink.mjs';
 import { renderMarkdown } from '../src/render/markdown.mjs';
 
 function tempRepo() {
@@ -55,13 +55,6 @@ test('markdown blocks and code lines each become a row that points back to its s
   assert.ok(byText('two'));
   assert.equal(rows.find((r) => r.kind === 'figure').text, 'flowchart LR\n  A --> B');
   for (let i = 0; i < rows.length; i++) assert.ok(html.includes(`data-row="${i}"`), `row ${i} is in the html`);
-});
-
-test('pressure maps flat through ordinary writing and steep at both ends', () => {
-  assert.ok(inkWidth(20) < 0.5);
-  assert.ok(inkWidth(190) - inkWidth(130) < 0.5);
-  assert.ok(inkWidth(230) > 3.5);
-  assert.equal(inkWidth(undefined), 2);
 });
 
 test('strokes rasterise to a grayscale png with ink where the pen went', () => {

@@ -37,19 +37,6 @@ private:
     qint64 a[7];
 };
 
-// Stroke width in screen pixels for a raw pen pressure (0-255), steep at both ends and flat
-// through ordinary writing. The knots match PRESSURE_KNOTS in src/render/ink.mjs and
-// web/review.js, so ink keeps its look when the page takes a stroke over.
-inline qreal inkWidth(int pressure) {
-    static const int P[] = { 0, 100, 200, 235 };
-    static const qreal Wd[] = { 0.3, 1.1, 1.7, 4.5 };
-    if (pressure <= P[0]) return Wd[0];
-    for (int i = 1; i < 4; ++i) {
-        if (pressure <= P[i]) return Wd[i - 1] + (pressure - P[i - 1]) * (Wd[i] - Wd[i - 1]) / (P[i] - P[i - 1]);
-    }
-    return Wd[3];
-}
-
 // Reads on its own thread so the kernel's queue is drained however long the GUI thread is
 // busy: evdev keeps only 64 events per reader (about 150 ms of pen), and when it overflows
 // the touch and release events go with the rest, fusing strokes into one. Frames are

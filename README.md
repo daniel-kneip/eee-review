@@ -20,7 +20,7 @@ Agent ──MCP──▶ eee-review mcp ──HTTP──▶ Hub (Laptop, Port 87
   Agenten anfordert. Jeder Strich wird automatisch gespeichert.
 - **eeereview** (`native/`): Qt-Embedded-4.6-App für das Tablet. Sie zeigt die Seiten in
   einem WebView und liest den Stift direkt von `/dev/input/event2`, mit rund 130 Punkten pro
-  Sekunde und Druck. Die Tinte zeichnet sie selbst über die Seite.
+  Sekunde. Die Tinte zeichnet sie selbst über die Seite.
 
 ## Einrichten
 
@@ -78,5 +78,4 @@ EEE_REVIEW_HOME=/tmp/eee EEE_REVIEW_PORT=8771 node src/cli.mjs hub
 ```
 
 Die Tablet-Seite muss in QtWebKit 533 laufen, also Safari-5-Niveau: ES5 ohne `bind`, kein
-`classList`, kein Flexbox. Die Druckkurve steht an drei Stellen, die zusammen geändert werden
-müssen: `src/render/ink.mjs`, `web/review.js` und `native/common/pen.h`.
+`classList`, kein Flexbox.

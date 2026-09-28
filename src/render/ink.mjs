@@ -1,31 +1,9 @@
 import zlib from 'node:zlib';
 
-// Stroke width in screen pixels for a raw pen pressure (0-255). Steep at both ends and flat
-// through the middle: in handwriting on the EA800 half of all pressures fall between 176 and
-// 213, so a linear map leaves ordinary writing looking uniform and makes neither a light
-// touch nor bearing down visible. web/review.js and native/common/pen.h carry the same knots.
-export const PRESSURE_KNOTS = [
-  [0, 0.3],
-  [100, 1.1],
-  [200, 1.7],
-  [235, 4.5],
-];
+const INK_RADIUS = 1.2;
 
-export function inkWidth(pressure) {
-  if (pressure === undefined || pressure === null || Number.isNaN(pressure)) return 2;
-  const k = PRESSURE_KNOTS;
-  if (pressure <= k[0][0]) return k[0][1];
-  for (let i = 1; i < k.length; i++) {
-    if (pressure <= k[i][0]) {
-      const t = (pressure - k[i - 1][0]) / (k[i][0] - k[i - 1][0]);
-      return k[i - 1][1] + t * (k[i][1] - k[i - 1][1]);
-    }
-  }
-  return k.at(-1)[1];
-}
-
-// Rasterises strokes ([[x, y, pressure?], ...]) to a grayscale PNG, each segment a capsule of
-// its width with a one-pixel soft edge, so handwriting reaches an agent as an image it can read.
+// Rasterises strokes ([[x, y], ...]) to a grayscale PNG, each segment a capsule with a
+// one-pixel soft edge, so handwriting reaches an agent as an image it can read.
 export function strokesToPng(strokes, width, height) {
   const pixels = new Uint8Array(width * height).fill(255);
   const plot = (px, py, coverage) => {
@@ -38,8 +16,8 @@ export function strokesToPng(strokes, width, height) {
     const points = stroke.length === 1 ? [stroke[0], stroke[0]] : stroke;
     for (let s = 1; s < points.length; s++) {
       const [x0, y0] = points[s - 1];
-      const [x1, y1, p] = points[s];
-      const r = Math.max(0.6, inkWidth(p) / 2);
+      const [x1, y1] = points[s];
+      const r = INK_RADIUS;
       const minX = Math.floor(Math.min(x0, x1) - r - 1);
       const maxX = Math.ceil(Math.max(x0, x1) + r + 1);
       const minY = Math.floor(Math.min(y0, y1) - r - 1);
