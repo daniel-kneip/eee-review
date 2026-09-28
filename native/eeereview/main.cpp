@@ -8,6 +8,7 @@
 // (eeelink's local end, 127.0.0.1:8770) and the Wi-Fi address after it.
 
 #include <QtGui>
+#include <QCopChannel>
 #include <QtNetwork>
 #include <QtWebKit>
 
@@ -60,6 +61,29 @@ static const char *UNREACHABLE =
     "Läuft <code>eee-review hub</code>, und steckt das Kabel?</p>"
     "<p><button style='font-size:22px;padding:8px 24px;margin-right:16px' onclick='eeeApp.retry()'>Nochmal</button>"
     "<button style='font-size:22px;padding:8px 24px' onclick='eeeApp.quit()'>Beenden</button></p></body></html>";
+
+// The stock launcher shows a loading dialog when it starts an app and waits for the app to
+// report app/showed on its QCop channel; an app that never does leaves the dialog up. It
+// also sends apps messages of its own (app/shutdown among them), which are logged here to
+// learn the rest, and power events come on qte/etablepowerchannel.
+class LauncherLink : public QObject {
+    Q_OBJECT
+public:
+    LauncherLink(QObject *parent) : QObject(parent) {
+        const char *channels[] = { "eeereview", "qte/etablepowerchannel" };
+        for (int i = 0; i < 2; ++i) {
+            QCopChannel *channel = new QCopChannel(channels[i], this);
+            connect(channel, SIGNAL(received(QString, QByteArray)), this, SLOT(received(QString, QByteArray)));
+        }
+    }
+    void showed() { QCopChannel::send("launcher", "app/showed"); }
+
+private slots:
+    void received(const QString &message, const QByteArray &data) {
+        fprintf(stderr, "qcop %s (%d bytes)\n", qPrintable(message), data.size());
+        if (message == "app/shutdown") qApp->quit();
+    }
+};
 
 class ReviewView : public QWebView {
     Q_OBJECT
@@ -294,6 +318,8 @@ int main(int argc, char **argv) {
     view.setGeometry(screen.x(), screen.y() + top, screen.width(), screen.height() - top);
     view.start();
     view.show();
+    LauncherLink launcher(&app);
+    launcher.showed();
     return app.exec();
 }
 
