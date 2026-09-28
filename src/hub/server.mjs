@@ -5,6 +5,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { escapeHtml } from '../render/highlight.mjs';
+import { iconPng } from '../tablet/icon.mjs';
 import { Store } from './store.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -19,6 +20,11 @@ const TABLET_FILES = {
   inktest: 'inktest/inktest',
   eeelink: 'eeelink/eeelink',
   'start.sh': 'tablet/start.sh',
+  'launch.sh': 'tablet/launch.sh',
+};
+const TABLET_ICONS = {
+  'icon_b_eeereview.png': () => iconPng(259, 261, 5),
+  'icon_s_eeereview.png': () => iconPng(97, 97, 2.5),
 };
 
 const STATUS = {
@@ -141,6 +147,9 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
         const file = path.join(root, 'web', m[1]);
         if (fs.existsSync(file))
           return send(req, res, fs.readFileSync(file), m[2] === 'js' ? 'text/javascript' : 'text/css');
+      }
+      if (req.method === 'GET' && (m = p.match(/^\/native\/([\w.-]+)$/)) && TABLET_ICONS[m[1]]) {
+        return send(req, res, TABLET_ICONS[m[1]](), 'image/png');
       }
       if (req.method === 'GET' && (m = p.match(/^\/native\/([\w.-]+)$/)) && TABLET_FILES[m[1]]) {
         const file = path.join(root, 'native', TABLET_FILES[m[1]]);

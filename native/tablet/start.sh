@@ -24,4 +24,9 @@ export TSLIB_TSDEVICE=/dev/input/event2 TSLIB_CONFFILE=/etc/ts.conf TSLIB_PLUGIN
 export FONTCONFIG_PATH=/etc/fonts HOME=/eTablet
 
 killall eeereview 2>/dev/null
-./eeereview http://127.0.0.1:8770/ $(cat hub-wifi 2>/dev/null) > /tmp/eeereview.log 2>&1 &
+HUBS="http://127.0.0.1:8770/ $(cat hub-wifi 2>/dev/null)"
+# From the launcher the app has to stay this process, which the launcher watches.
+if [ "$1" = foreground ]; then
+  exec ./eeereview $HUBS > /tmp/eeereview.log 2>&1
+fi
+./eeereview $HUBS > /tmp/eeereview.log 2>&1 &

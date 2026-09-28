@@ -4,7 +4,7 @@ const INK_RADIUS = 1.2;
 
 // Rasterises strokes ([[x, y], ...]) to a grayscale PNG, each segment a capsule with a
 // one-pixel soft edge, so handwriting reaches an agent as an image it can read.
-export function strokesToPng(strokes, width, height) {
+export function strokesToPng(strokes, width, height, radius = INK_RADIUS) {
   const pixels = new Uint8Array(width * height).fill(255);
   const plot = (px, py, coverage) => {
     if (px < 0 || py < 0 || px >= width || py >= height || coverage <= 0) return;
@@ -17,7 +17,7 @@ export function strokesToPng(strokes, width, height) {
     for (let s = 1; s < points.length; s++) {
       const [x0, y0] = points[s - 1];
       const [x1, y1] = points[s];
-      const r = INK_RADIUS;
+      const r = radius;
       const minX = Math.floor(Math.min(x0, x1) - r - 1);
       const maxX = Math.ceil(Math.max(x0, x1) + r + 1);
       const minY = Math.floor(Math.min(y0, y1) - r - 1);

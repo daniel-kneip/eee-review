@@ -73,9 +73,38 @@ async function deploy(host) {
     8000,
   );
   if (lan) await run(`echo ${lan} > ${dir}/hub-wifi`);
+  await installLauncherEntry(run, hubUrl);
   await run(`${dir}/start.sh`, 5000);
   await run('cat /tmp/eeereview.log /tmp/eeelink.log; pidof eeereview eeelink');
   session.close();
+}
+
+// The stock launcher lists apps from Config.xml and starts <path> as
+// /usr/local/eTablet/bin/<path>/<path>. /usr is mounted read-only, so it is remounted
+// writable for the copy and read-only again after. Config.xml is saved once as .orig
+// before the entry is added, and the entry only goes in when it is missing.
+async function installLauncherEntry(run, hubUrl) {
+  const bin = '/usr/local/eTablet/bin/eeereview';
+  const icons = '/usr/local/eTablet/bin/launcher/icon';
+  const config = '/eTablet/etc/launcher/Config.xml';
+  const entry =
+    '<Ap thumbnail="icon/icon_b_eeereview.png" note="Specs, plans and code reviewed with the pen, round by round with a coding agent." action="Startup" path="eeereview" icon="icon/icon_s_eeereview.png" name="eee-review"/>';
+  await run(
+    [
+      'mount -o remount,rw /usr',
+      `mkdir -p ${bin}`,
+      `wget -q -O ${bin}/eeereview ${hubUrl}native/launch.sh`,
+      `chmod +x ${bin}/eeereview`,
+      `wget -q -O ${icons}/icon_b_eeereview.png ${hubUrl}native/icon_b_eeereview.png`,
+      `wget -q -O ${icons}/icon_s_eeereview.png ${hubUrl}native/icon_s_eeereview.png`,
+      'sync',
+      'mount -o remount,ro /usr',
+    ].join('; '),
+    6000,
+  );
+  await run(
+    `grep -q 'path="eeereview"' ${config} || { [ -f ${config}.orig ] || cp ${config} ${config}.orig; sed 's#</AppList>#${entry}</AppList>#' ${config} > ${config}.new && mv ${config}.new ${config}; }; grep -c 'path="eeereview"' ${config}; mount | grep ' /usr '`,
+  );
 }
 
 function reachable(host, port) {
