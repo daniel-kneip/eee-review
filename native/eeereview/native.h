@@ -380,6 +380,11 @@ private slots:
             if (!tiles.contains(b.key)) continue;
             Tile &t = tiles[b.key];
             t.busy = false;
+            // Scrolled away while it baked: dropped like the rest there.
+            if (!near(t)) {
+                reset(t);
+                continue;
+            }
             if (b.gen == t.gen) {
                 t.image = b.image;
                 t.shown = QPixmap::fromImage(b.gray);
@@ -651,26 +656,25 @@ private:
         }
         for (QMap<QString, Tile>::iterator it = tiles.begin(); it != tiles.end(); ++it) {
             Tile &t = it.value();
-            if (t.shown.isNull() && t.image.isNull()) continue;
-            bool near;
-            if (t.note) {
-                int first = openMark ? openMark->noteScroll / NOTE_TILE - KEEP_STRIPS : 0;
-                int last = openMark ? (openMark->noteScroll + noteH) / NOTE_TILE + KEEP_STRIPS : -1;
-                near = t.mark == openMark && t.index >= first && t.index <= last;
-            } else {
-                const Doc &d = docs[t.doc];
-                near = t.doc == cur && t.index >= d.scroll / d.strip - KEEP_STRIPS && t.index <= (d.scroll + docH()) / d.strip + KEEP_STRIPS;
-            }
-            if (!near) reset(t);
+            if ((!t.shown.isNull() || !t.image.isNull()) && !near(t)) reset(t);
         }
+    }
+    bool near(const Tile &t) const {
+        if (t.note) {
+            if (t.mark != openMark) return false;
+            return t.index >= openMark->noteScroll / NOTE_TILE - KEEP_STRIPS &&
+                   t.index <= (openMark->noteScroll + noteH) / NOTE_TILE + KEEP_STRIPS;
+        }
+        const Doc &d = docs[t.doc];
+        return t.doc == cur && t.index >= d.scroll / d.strip - KEEP_STRIPS && t.index <= (d.scroll + docH()) / d.strip + KEEP_STRIPS;
     }
     void scrolled() {
         lastScroll.start();
         trimMemory();
+        // Only near the view: every tile further away was just let go of.
         for (QMap<QString, Tile>::iterator it = tiles.begin(); it != tiles.end(); ++it) {
             Tile &t = it.value();
-            bool here = t.note ? t.mark == openMark : t.doc == cur;
-            if (here && (!t.fresh || !t.unbaked.isEmpty())) bakeTile(t);
+            if (near(t) && (!t.fresh || !t.unbaked.isEmpty())) bakeTile(t);
         }
     }
 
