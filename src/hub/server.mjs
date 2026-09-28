@@ -133,7 +133,9 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
     const url = new URL(req.url, 'http://hub');
     const p = url.pathname;
     let m;
+    if (process.env.EEE_REVIEW_DEBUG) log(req.method, p, 'from', req.socket.remoteAddress);
     try {
+      if (req.method === 'GET' && p === '/api/ping') return json(req, res, { ok: true });
       if (req.method === 'GET' && p === '/') return send(req, res, inboxPage(store));
       if (req.method === 'GET' && (m = p.match(/^\/web\/([\w.-]+\.(js|css))$/))) {
         const file = path.join(root, 'web', m[1]);
@@ -209,6 +211,11 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       log('error', p, err.message);
       json(req, res, { error: err.message }, 500);
     }
+  });
+
+  server.on('clientError', (err, socket) => {
+    log('rejected request', err.code, JSON.stringify(err.rawPacket?.toString('latin1') ?? ''));
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
   });
 
   return new Promise((resolve, reject) => {

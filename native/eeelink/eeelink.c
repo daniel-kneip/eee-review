@@ -48,7 +48,9 @@ static struct forward forwards[MAX_FORWARDS];
 static int forward_count = 0;
 static int next_channel = 1;
 
+static int debug = 0;
 static void logf_(const char *msg, int a) { fprintf(stderr, "eeelink: %s %d\n", msg, a); }
+static void trace(const char *what, int id, int n) { if (debug) fprintf(stderr, "eeelink: %s channel %d, %d bytes\n", what, id, n); }
 
 // ── Link: the byte stream to the other side ────────────────────────────────
 
@@ -132,11 +134,17 @@ static int link_open(void) {
 
 static int link_read_fd(void) { return tty; }
 
+// The tablet's USB controller (pxa3xx_udc) sends a queued IN packet late when several are
+// queued at once: a 64-byte packet of a longer message arrives after the ones behind it. So
+// the tablet writes one full-speed packet at a time and waits for it to go out before the next.
+#define PACKET 64
+
 static int link_write(const unsigned char *buf, int len) {
     int off = 0;
     while (off < len) {
-        int n = write(tty, buf + off, len - off);
+        int n = write(tty, buf + off, len - off < PACKET ? len - off : PACKET);
         if (n < 0) { if (errno == EINTR || errno == EAGAIN) continue; return -1; }
+        tcdrain(tty);
         off += n;
     }
     return 0;
@@ -144,10 +152,11 @@ static int link_write(const unsigned char *buf, int len) {
 #endif
 
 static int send_frame(int type, int id, const unsigned char *payload, int len) {
-    unsigned char head[6] = { MAGIC, (unsigned char)type, (unsigned char)(id >> 8), (unsigned char)id,
-                              (unsigned char)(len >> 8), (unsigned char)len };
-    if (link_write(head, 6)) return -1;
-    return len ? link_write(payload, len) : 0;
+    trace(type == OPEN ? "send OPEN" : type == DATA ? "send DATA" : "send CLOSE", id, len);
+    unsigned char frame[6 + MAX_PAYLOAD] = { MAGIC, (unsigned char)type, (unsigned char)(id >> 8), (unsigned char)id,
+                                             (unsigned char)(len >> 8), (unsigned char)len };
+    if (len) memcpy(frame + 6, payload, len);
+    return link_write(frame, 6 + len);
 }
 
 // ── Channels ────────────────────────────────────────────────────────────────
@@ -204,6 +213,7 @@ static unsigned char inbuf[2 * (MAX_PAYLOAD + 6)];
 static int inlen = 0;
 
 static void handle_frame(int type, int id, const unsigned char *p, int len) {
+    trace(type == OPEN ? "got OPEN" : type == DATA ? "got DATA" : "got CLOSE", id, len);
     if (type == OPEN && len == 2) {
         int fd = connect_local((p[0] << 8) | p[1]);
         if (fd < 0 || !add(id, fd)) send_frame(CLOSE, id, NULL, 0);
@@ -288,6 +298,7 @@ static void reset_channels(void) {
 
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+    debug = getenv("EEELINK_DEBUG") != NULL;
 #ifdef EEELINK_HOST
     const char *defaults[] = { "2323:23" };
 #else

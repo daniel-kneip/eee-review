@@ -8,20 +8,39 @@
 // (eeelink's local end, 127.0.0.1:8770) and the Wi-Fi address after it.
 
 #include <QtGui>
+#include <QtNetwork>
 #include <QtWebKit>
 
 #include <cstdio>
+#include <cstring>
 
 #include "../common/pen.h"
 
 // Ink is drawn here, over the page, while the pen is down, and the page gets the stroke
 // whole when it lifts: one evaluateJavaScript per stroke instead of per point, which on
 // this CPU is what kept the ink trailing the pen.
+// Page script errors and console output go to stderr, the only place to see them on the tablet.
+class LoggingPage : public QWebPage {
+public:
+    LoggingPage(QObject *parent) : QWebPage(parent) {}
+
+protected:
+    void javaScriptConsoleMessage(const QString &message, int line, const QString &source) {
+        fprintf(stderr, "js %s:%d: %s\n", qPrintable(source), line, qPrintable(message));
+    }
+};
+
 class ReviewView : public QWebView {
     Q_OBJECT
 public:
-    ReviewView(const QStringList &list) : urls(list), tried(0), started(false), swallowing(false) {
+    ReviewView(const QStringList &list) : urls(list), tried(0), started(false), swallowing(false), pending(0) {
+        setPage(new LoggingPage(this));
+        connect(this, SIGNAL(loadStarted()), this, SLOT(loading()));
         connect(this, SIGNAL(loadFinished(bool)), this, SLOT(loaded(bool)));
+        connect(page()->networkAccessManager(), SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
+        connect(&probe, SIGNAL(finished(QNetworkReply *)), this, SLOT(probed(QNetworkReply *)));
+        connect(&probeTimeout, SIGNAL(timeout()), this, SLOT(probeTimedOut()));
+        probeTimeout.setSingleShot(true);
         page()->mainFrame()->setScrollBarPolicy(Qt::Vertical, Qt::ScrollBarAlwaysOff);
         page()->mainFrame()->setScrollBarPolicy(Qt::Horizontal, Qt::ScrollBarAlwaysOff);
         PenReader *pen = new PenReader("/dev/input/event2", this);
@@ -33,7 +52,18 @@ public:
         connect(&streamBatch, SIGNAL(timeout()), this, SLOT(flushStream()));
     }
 
-    void start() { load(QUrl(urls.first())); }
+    // Each hub address is asked for its inbox before the page loads one, so the route is
+    // settled once and every later page is on the same host.
+    void start() {
+        if (tried >= urls.size()) {
+            fprintf(stderr, "%s no hub reachable, showing the last address anyway\n", stamp());
+            load(QUrl(urls.last()));
+            return;
+        }
+        fprintf(stderr, "%s probing %s\n", stamp(), qPrintable(urls[tried]));
+        pending = probe.get(QNetworkRequest(QUrl(urls[tried] + "api/ping")));
+        probeTimeout.start(4000);
+    }
 
 protected:
     // tslib delivers the same pen as mouse events. Over a canvas they would set WebKit
@@ -64,15 +94,31 @@ protected:
     }
 
 private slots:
-    // Only the first page decides the route: once the inbox came through one address,
-    // every later page is on the same host.
-    void loaded(bool ok) {
-        if (ok || tried + 1 >= urls.size() || started) {
-            started = started || ok;
-            return;
+    void probed(QNetworkReply *reply) {
+        reply->deleteLater();
+        if (reply != pending) return;
+        probeTimeout.stop();
+        pending = 0;
+        if (reply->error() == QNetworkReply::NoError) {
+            fprintf(stderr, "%s hub at %s\n", stamp(), qPrintable(urls[tried]));
+            load(QUrl(urls[tried]));
+        } else {
+            fprintf(stderr, "%s no hub at %s: %s\n", stamp(), qPrintable(urls[tried]), qPrintable(reply->errorString()));
+            ++tried;
+            start();
         }
-        fprintf(stderr, "no hub at %s, trying %s\n", qPrintable(urls[tried]), qPrintable(urls[tried + 1]));
-        load(QUrl(urls[++tried]));
+    }
+    void probeTimedOut() {
+        if (pending) pending->abort();
+    }
+    void loading() { fprintf(stderr, "%s loading\n", stamp()); }
+    void fetched(QNetworkReply *reply) {
+        if (reply->error() != QNetworkReply::NoError) {
+            fprintf(stderr, "failed %s: %s\n", qPrintable(reply->url().toString()), qPrintable(reply->errorString()));
+        }
+    }
+    void loaded(bool ok) {
+        fprintf(stderr, "%s loaded %s: %s\n", stamp(), qPrintable(url().toString()), ok ? "ok" : "failed");
     }
     void penDown(int x, int y, int pressure, qint64) {
         QPoint p = toView(x, y);
@@ -133,10 +179,19 @@ private:
     QVector<QPoint> ink, streaming;
     QVector<int> pressures;
     QRect dirty;
+    static const char *stamp() {
+        static char buf[16];
+        strcpy(buf, qPrintable(QTime::currentTime().toString("hh:mm:ss.zzz")));
+        return buf;
+    }
+
     QStringList urls;
     int tried;
     bool started;
     bool swallowing;
+    QNetworkAccessManager probe;
+    QNetworkReply *pending;
+    QTimer probeTimeout;
     QTimer streamBatch;
 };
 
