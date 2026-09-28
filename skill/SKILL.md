@@ -15,7 +15,8 @@ the marks back.
   are rendered as images; any other file is shown whole with line numbers.
 - Code: `review_create` with `kind: "code"`. Without `head` it shows the working tree against
   `base` (default `HEAD`), new files included. With `base` and `head` it shows the change between
-  two commits. Put files the user will need to understand the change in `files`.
+  two commits. When the user names files or folders, pass them as `files`: the review then shows
+  only their changes, and a named file without changes is shown whole.
 - Give it a short title. It is what the user sees in the tablet's inbox.
 - Pass `repo` as the project's absolute path unless you know the MCP server runs inside the
   project. Kiro starts it elsewhere; without `repo` the call then fails and asks for it.

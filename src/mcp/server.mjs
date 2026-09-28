@@ -87,7 +87,7 @@ export async function startMcp() {
     {
       title: 'Review auf dem Tablet starten',
       description:
-        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files kommen als Kontext dazu. Danach review_wait aufrufen.',
+        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein), eine aufgeführte Datei ohne Änderung erscheint ganz. Danach review_wait aufrufen.',
       inputSchema: {
         title: z.string().describe('Kurzer Titel, erscheint in der Eingangsliste'),
         kind: z.enum(['spec', 'code']).default('spec'),

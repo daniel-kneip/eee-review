@@ -151,14 +151,32 @@ public slots:
 protected:
     // Whatever the page does, these keys leave the app. Every key is logged, since which codes
     // the tablet's buttons send is not documented anywhere.
+    // The Eee Note's buttons arrive as function keys. The page gets the first say; Back and
+    // Home leave the app when it does not take them.
     void keyPressEvent(QKeyEvent *event) {
-        fprintf(stderr, "%s key 0x%x\n", stamp(), event->key());
-        if (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Back || event->key() == Qt::Key_Home ||
-            event->key() == Qt::Key_HomePage) {
-            qApp->quit();
+        QString name = buttonName(event->key());
+        if (name.isEmpty()) {
+            fprintf(stderr, "%s key 0x%x\n", stamp(), event->key());
+            if (event->key() == Qt::Key_Escape) qApp->quit();
+            else QWebView::keyPressEvent(event);
             return;
         }
-        QWebView::keyPressEvent(event);
+        fprintf(stderr, "%s button %s\n", stamp(), qPrintable(name));
+        bool taken = run(QString("window.keys ? keys.press('%1') : false").arg(name)).toBool();
+        if (!taken && (name == "back" || name == "home")) qApp->quit();
+    }
+    static QString buttonName(int key) {
+        switch (key) {
+        case Qt::Key_F1: return "back";
+        case Qt::Key_F2: return "g1";
+        case Qt::Key_F3: return "g2";
+        case Qt::Key_F4: return "g3";
+        case Qt::Key_F5: return "g4";
+        case Qt::Key_F6: return "left";
+        case Qt::Key_F9: return "home";
+        case Qt::Key_F12: return "right";
+        default: return QString();
+        }
     }
 
     // tslib delivers the same pen as mouse events. Over a canvas they would set WebKit
@@ -322,6 +340,7 @@ private:
 // Started from the menu, the app gets no arguments and no log: it brings up the USB link
 // itself and tries the cable first, then the Wi-Fi address deploy left behind.
 static QStringList menuStart() {
+    rename("/tmp/eeereview.log", "/tmp/eeereview.log.1");
     freopen("/tmp/eeereview.log", "w", stderr);
     setvbuf(stderr, 0, _IONBF, 0);
     QProcess::execute("/bin/sh", QStringList() << "/eTablet/eee-review/start.sh" << "link");

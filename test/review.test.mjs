@@ -76,7 +76,7 @@ test('strokes rasterise to a grayscale png with ink where the pen went', () => {
   assert.equal(pixel(50, 2), 255, 'away from the stroke');
 });
 
-test('a code review goes to the tablet, comes back with located marks, and returns as the next round', async () => {
+test('a code review of the files asked for goes to the tablet, comes back with located marks, and returns as the next round', async () => {
   const repo = tempRepo();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'eee-home-'));
   const { server } = await startHub({ port: 0, home, log: () => {} });
@@ -95,13 +95,13 @@ test('a code review goes to the tablet, comes back with located marks, and retur
       title: 'Logging',
       kind: 'code',
       repo,
-      files: ['spec.md'],
+      files: ['auth.js', 'spec.md'],
     });
     const page = await (await fetch(`${base}/r/${review.id}`)).text();
     const client = JSON.parse(page.match(/var REVIEW = (.*);<\/script>/)[1]);
     assert.deepEqual(
       client.docs.map((d) => `${d.kind} ${d.path}`),
-      ['diff auth.js', 'file auth.js', 'diff log.js', 'file log.js', 'spec spec.md'],
+      ['diff auth.js', 'file auth.js', 'spec spec.md'],
     );
     assert.match(await (await fetch(`${base}/`)).text(), /Logging/);
 

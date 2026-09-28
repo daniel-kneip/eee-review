@@ -14,10 +14,14 @@ Agent ──MCP──▶ eee-review mcp ──HTTP──▶ Hub (Laptop, Port 87
 - **MCP-Server** (`src/mcp`): Stellt dem Agenten die Tools `review_create`, `review_wait`,
   `review_respond`, `review_add_context`, `review_close` und `review_list` bereit. Ist der Hub
   noch nicht gestartet, startet der MCP-Server ihn im Hintergrund.
-- **Tablet-Seite** (`web/`): Leiste unten mit Stift, Radierer und Hand. Dazu kommen eine
-  Notiz, die sich größer ziehen und endlos scrollen lässt, eine Scrollleiste mit den Nummern
-  der Markierungen, Stempel (OK, Nein, ?) und die Schaltfläche „Frage", die sofort Kontext beim
+- **Tablet-Seite** (`web/`): Leiste unten mit Stift und Radierer. Dazu kommen eine Notiz,
+  die sich größer ziehen lässt und endlos weitergeht, eine Scrollleiste mit den Nummern der
+  Markierungen, Stempel (OK, Nein, ?) und die Schaltfläche „Frage", die sofort Kontext beim
   Agenten anfordert. Jeder Strich wird automatisch gespeichert.
+- **Tasten am Tablet**: Links und Rechts blättern im Dokument oder in der Notiz, je nachdem,
+  wo zuletzt geschrieben wurde. Generic 1 bis 4 sind Stift, Radierer, Rückgängig und Dateien.
+  Back schließt Dateiliste oder Notiz und führt sonst zur Eingangsliste; Home speichert und
+  beendet die App.
 - **eeereview** (`native/`): Qt-Embedded-4.6-App für das Tablet. Sie zeigt die Seiten in
   einem WebView und liest den Stift direkt von `/dev/input/event2`, mit rund 130 Punkten pro
   Sekunde. Die Tinte zeichnet sie selbst über die Seite.

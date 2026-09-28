@@ -3,7 +3,8 @@
 //
 // The document scrolls in the upper pane with a rail on its right; a stroke on it starts a
 // mark whose note opens beneath, in a pane that can be dragged taller and scrolls without
-// end. The pen acts by the tool chosen in the bottom bar: ink, eraser, or hand to scroll.
+// end. The pen inks or erases, by the tool chosen in the bottom bar; the tablet's arrow
+// buttons scroll whichever pane the pen last worked in.
 //
 // Inside the eeereview app the pen arrives through window.pen at full rate, and the app keeps
 // its mouse echo away from the page; in a plain browser the pen arrives as mouse events.
@@ -30,7 +31,7 @@
 
   var W, H, docW, docH, noteH = 0, notePaneH = 0;
   var cur = 0, scrolls = [], heights = [], rowBoxes = [], docTiles = [];
-  var marks = [], openMark = null, tool = 'pen', undoStack = [], active = null;
+  var marks = [], openMark = null, tool = 'pen', pane = 'doc', undoStack = [], active = null;
   var noteTiles = [], noteShown = null;
   var saveTimer = null;
 
@@ -137,7 +138,6 @@
     }
     el('toolPen').className = tool === 'pen' ? 'on' : '';
     el('toolEraser').className = tool === 'eraser' ? 'on' : '';
-    el('toolHand').className = tool === 'hand' ? 'on' : '';
   }
 
   // ── Ink tiles ───────────────────────────────────────────────────────────
@@ -312,6 +312,7 @@
 
   function closeNote() {
     openMark = null;
+    pane = 'doc';
     timed('close note', layout);
     scheduleSave();
   }
@@ -430,7 +431,8 @@
     var target = targetAt(x, y);
     if (!target) return '';
     if (active) end();
-    var action = target === 'rail' || target === 'grip' ? target : tool === 'hand' ? 'hand' : eraser || tool === 'eraser' ? 'erase' : 'ink';
+    if (target === 'doc' || target === 'note') pane = target;
+    var action = target === 'rail' || target === 'grip' ? target : eraser || tool === 'eraser' ? 'erase' : 'ink';
     active = { target: target, action: action, pts: [], drawn: false, lastY: y, startY: y, moved: 0, startScroll: target === 'note' ? openMark.noteScroll : scrolls[cur], startNoteH: noteH };
     if (action === 'ink') active.pts.push(toInk(target, x, y));
     else extend(x, y);
@@ -452,9 +454,6 @@
     } else if (active.action === 'erase') {
       var e = toInk(active.target, x, y);
       if (active.target === 'doc') eraseDoc(e); else eraseNote(e);
-    } else if (active.action === 'hand') {
-      if (active.target === 'doc') scrollTo(active.startScroll - dy);
-      else { openMark.noteScroll = Math.max(0, Math.round(active.startScroll - dy)); showNote(); }
     } else if (active.action === 'rail') {
       scrollTo(Math.max(0, Math.min(1, y / docH)) * (heights[cur] || 0) - docH / 2);
     } else if (active.action === 'grip') {
@@ -472,11 +471,6 @@
   function end() {
     var g = active;
     active = null;
-    if (g && g.action === 'hand' && g.target === 'doc' && g.moved < TAP_MAX) {
-      var tapped = hitMark(toInk('doc', 0, g.startY));
-      if (tapped && tapped !== openMark) openNote(tapped);
-      return;
-    }
     if (!g || g.action !== 'ink') return;
     var stroke = g.pts;
     if (g.target === 'note') {
@@ -733,12 +727,15 @@
     el('shade').style.display = 'none';
   }
 
-  function saveThenQuit() {
-    if (!saveTimer) { window.eeeApp.quit(); return; }
+  function saveThen(next) {
+    if (!saveTimer) { next(); return; }
     clearTimeout(saveTimer);
     saveTimer = null;
-    post('/api/r/' + R.id + '/draft', { marks: packMarks() }, function () { window.eeeApp.quit(); });
+    post('/api/r/' + R.id + '/draft', { marks: packMarks() }, next);
   }
+
+  function saveThenQuit() { saveThen(function () { window.eeeApp.quit(); }); }
+  function toInbox() { saveThen(function () { window.location.href = '/'; }); }
 
   filesView.onclick = function (e) {
     var t = e.target;
@@ -746,7 +743,7 @@
     if (!t || t === filesView) return;
     var act = t.getAttribute('data-act'), jump = t.getAttribute('data-jump'), dir = t.getAttribute('data-dir'), to = t.getAttribute('data-doc');
     if (act === 'send') return submit();
-    if (act === 'inbox') { window.location.href = '/'; return; }
+    if (act === 'inbox') return toInbox();
     if (act === 'quit') return saveThenQuit();
     if (jump) return go(Number(jump), lineAtView());
     if (dir) { collapsed[dir] = !collapsed[dir]; openFiles(); return; }
@@ -768,9 +765,15 @@
   // ── Wiring ──────────────────────────────────────────────────────────────
 
   function setTool(t) { tool = t; status(); }
+
+  function page(dir) {
+    if (pane === 'note' && openMark) {
+      openMark.noteScroll = Math.max(0, Math.round(openMark.noteScroll + dir * notePaneH * 0.75));
+      showNote();
+    } else scrollTo(scrolls[cur] + dir * docH * 0.75);
+  }
   el('toolPen').onclick = function () { setTool('pen'); };
   el('toolEraser').onclick = function () { setTool('eraser'); };
-  el('toolHand').onclick = function () { setTool('hand'); };
   el('undo').onclick = undo;
   el('filesBtn').onclick = function () { if (filesView.style.display === 'block') closeFiles(); else openFiles(); };
   el('shade').onclick = closeFiles;
@@ -789,10 +792,27 @@
       drawBadge(openMark); status(); scheduleSave();
     };
   }
+  window.keys = {
+    press: function (name) {
+      if (name === 'back') {
+        if (filesView.style.display === 'block') closeFiles();
+        else if (openMark) closeNote();
+        else toInbox();
+      } else if (name === 'home') saveThenQuit();
+      else if (name === 'left') page(-1);
+      else if (name === 'right') page(1);
+      else if (name === 'g1') setTool('pen');
+      else if (name === 'g2') setTool('eraser');
+      else if (name === 'g3') undo();
+      else if (name === 'g4') el('filesBtn').onclick();
+      else return false;
+      return true;
+    }
+  };
   document.onkeydown = function (e) {
     e = e || window.event;
-    if (e.keyCode === 38 || e.keyCode === 33 || e.keyCode === 37) { scrollTo(scrolls[cur] - docH * 0.75); return false; }
-    if (e.keyCode === 40 || e.keyCode === 34 || e.keyCode === 39) { scrollTo(scrolls[cur] + docH * 0.75); return false; }
+    if (e.keyCode === 38 || e.keyCode === 33 || e.keyCode === 37) { page(-1); return false; }
+    if (e.keyCode === 40 || e.keyCode === 34 || e.keyCode === 39) { page(1); return false; }
   };
   // QtWebKit on the tablet fires resize when the page resizes its own panes; answering every
   // one with a layout feeds it back without end and starves the app.

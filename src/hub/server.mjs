@@ -78,7 +78,11 @@ function inboxPage(store) {
 <title>Reviews</title><link rel="stylesheet" href="/web/inbox.css"></head>
 <body><button type="button" id="quit" onclick="eeeApp.quit()">Beenden</button><h1>Reviews</h1>${
     items || '<p class="empty">Nichts offen. Neue Reviews erscheinen hier von selbst.</p>'
-  }<script type="text/javascript">if (window.eeeApp) document.getElementById('quit').style.display = 'block';</script></body></html>`;
+  }<script type="text/javascript">if (window.eeeApp) document.getElementById('quit').style.display = 'block';
+window.keys = { press: function (name) {
+  if (name === 'left' || name === 'right') { window.scrollBy(0, (name === 'left' ? -0.75 : 0.75) * window.innerHeight); return true; }
+  return false;
+} };</script></body></html>`;
 }
 
 function reviewPage(store, review) {
@@ -114,7 +118,7 @@ function reviewPage(store, review) {
 <button type="button" data-stamp="ok">OK</button><button type="button" data-stamp="no">Nein</button><button type="button" data-stamp="ask">?</button>
 <button type="button" id="askAgent">Frage</button><button type="button" id="noteClose">Schlie&szlig;en</button></div>
 <div class="pane" id="notePane"><div id="noteLayer"></div></div>
-<div class="bar" id="toolBar"><button type="button" id="filesBtn">Dateien</button><button type="button" id="toolPen" class="on">Stift</button><button type="button" id="toolEraser">Radierer</button><button type="button" id="toolHand">Hand</button><button type="button" id="undo">&#8630;</button><button type="button" id="prevDoc">&#9664;</button><button type="button" id="nextDoc">&#9654;</button><span id="status"></span></div>
+<div class="bar" id="toolBar"><button type="button" id="filesBtn">Dateien</button><button type="button" id="toolPen" class="on">Stift</button><button type="button" id="toolEraser">Radierer</button><button type="button" id="undo">&#8630;</button><button type="button" id="prevDoc">&#9664;</button><button type="button" id="nextDoc">&#9654;</button><span id="status"></span></div>
 <div id="shade"></div>
 <div id="files"></div>
 <div id="store" style="display:none">${store_}</div>

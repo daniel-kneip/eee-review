@@ -70,7 +70,8 @@ export class Store extends EventEmitter {
 
   // kind 'spec': files are documents (markdown rendered, anything else shown whole).
   // kind 'code': the change between base and head (or the working tree) in repo, a diff and
-  // a whole-file view per touched file, plus any extra files as context.
+  // a whole-file view per touched file. Files, when given, narrow the change to those paths
+  // (a folder takes everything under it); a listed file that did not change is shown whole.
   async create({ title, kind = 'spec', repo, files = [], base = 'HEAD', head = null }) {
     const review = {
       id: newId(),
@@ -91,8 +92,14 @@ export class Store extends EventEmitter {
 
   async buildDocs(review) {
     const docs = [];
+    let unchanged = review.files;
     if (review.kind === 'code') {
-      for (const file of changedFiles(review.repo, review.base, review.head)) {
+      const wanted = (file) => (want) => file === want || file.startsWith(want.replace(/\/?$/, '/'));
+      const changes = changedFiles(review.repo, review.base, review.head).filter(
+        (file) => !review.files.length || review.files.some(wanted(file.path)),
+      );
+      unchanged = review.files.filter((want) => !changes.some((file) => wanted(file.path)(want)));
+      for (const file of changes) {
         const changed = new Set(file.hunks.flatMap((h) => h.lines.filter((l) => l.kind === 'add').map((l) => l.new)));
         const lines = file.hunks.flatMap((h) => h.lines);
         docs.push({
@@ -114,7 +121,7 @@ export class Store extends EventEmitter {
         }
       }
     }
-    for (const file of review.files) docs.push(this.renderSource(review, file));
+    for (const file of unchanged) docs.push(this.renderSource(review, file));
     return docs;
   }
 
