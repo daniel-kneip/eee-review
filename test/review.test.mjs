@@ -76,7 +76,7 @@ test('strokes rasterise to a grayscale png with ink where the pen went', () => {
   assert.equal(pixel(50, 2), 255, 'away from the stroke');
 });
 
-test('a code review of the files asked for goes to the tablet, comes back with located marks, and returns as the next round', async () => {
+test('a code review of the files asked for goes to the tablet as pages and markup, comes back with located marks, and returns as the next round', async () => {
   const repo = tempRepo();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'eee-home-'));
   const { server } = await startHub({ port: 0, home, log: () => {} });
@@ -107,6 +107,10 @@ test('a code review of the files asked for goes to the tablet, comes back with l
 
     const diff = client.docs[0];
     const added = diff.rowNew.indexOf(2);
+    const rendered = await (await fetch(`${base}/r/${review.id}/pages/0/index.json`)).json();
+    const strip = Buffer.from(await (await fetch(`${base}/r/${review.id}/pages/0/0.png`)).arrayBuffer());
+    assert.ok(strip.subarray(1, 4).equals(Buffer.from('PNG')));
+    const [, addedBottom] = rendered.rows.find(([, , row]) => row === added);
     const waiting = fetch(`${base}/api/agent/wait/${review.id}?timeout=30`).then((r) => r.json());
     await call('POST', `/api/r/${review.id}/submit`, {
       marks: [
@@ -126,6 +130,7 @@ test('a code review of the files asked for goes to the tablet, comes back with l
           rows: [added],
           stamp: 'no',
         },
+        { id: 'm2', doc: diff.id, ink: [[[20, addedBottom + 4], [300, addedBottom + 5]]], note: [] },
       ],
     });
     const feedback = await waiting;
@@ -133,6 +138,7 @@ test('a code review of the files asked for goes to the tablet, comes back with l
     assert.equal(feedback.marks[0].where, 'auth.js (Diff, Zeile 2)');
     assert.equal(feedback.marks[0].text, '+  log(id);');
     assert.equal(feedback.marks[0].stamp, 'no');
+    assert.equal(feedback.marks[1].where, 'auth.js (Diff, Zeile 2)', 'ink alone is located on the rendered page');
     assert.ok(Buffer.from(feedback.marks[0].note, 'base64').subarray(1, 4).equals(Buffer.from('PNG')));
 
     const { review: next } = await call('POST', `/api/agent/respond/${review.id}`, {

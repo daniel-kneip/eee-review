@@ -1,7 +1,7 @@
-// Probe: shows a document pre-rendered by scripts/render-pages.mjs as pixmap strips, to measure
+// Probe: shows a document the hub pre-rendered as pixmap strips, to measure
 // how fast the Eee Note pages and scrolls pixels compared with WebKit laying out the page.
 //
-//   ./pagetest http://127.0.0.1:8770/pages/<id>/<doc>/
+//   ./pagetest http://127.0.0.1:8770/r/<id>/pages/<doc>/
 //
 // Left/Right page by three quarters of a screen, a pen drag scrolls, Generic 1 repaints the
 // whole screen, Generic 2 scrolls in 20 small steps. Back or Home quits. Timings go to stderr.
@@ -125,7 +125,7 @@ private:
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
-    if (argc < 2) { fprintf(stderr, "usage: pagetest http://hub/pages/<id>/<doc>/\n"); return 1; }
+    if (argc < 2) { fprintf(stderr, "usage: pagetest http://hub/r/<id>/pages/<doc>/\n"); return 1; }
     QRect screen = QApplication::desktop()->screenGeometry();
     int top = QApplication::desktop()->availableGeometry().y();
     PageView view(argv[1]);

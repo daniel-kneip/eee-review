@@ -5,6 +5,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { escapeHtml } from '../render/highlight.mjs';
+import { PAGE_WIDTH, PageRenderer } from '../render/pages.mjs';
+import { rowsUnderInk } from './rows.mjs';
 import { iconPng } from '../tablet/icon.mjs';
 import { Store } from './store.mjs';
 
@@ -47,6 +49,14 @@ function send(req, res, body, type = 'text/html; charset=utf-8', status = 200) {
 }
 const json = (req, res, value, status = 200) => send(req, res, JSON.stringify(value), 'application/json', status);
 
+function readJsonFile(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -86,9 +96,9 @@ window.keys = { press: function (name) {
 } };</script></body></html>`;
 }
 
-function reviewPage(store, review) {
+function clientReview(store, review) {
   const docs = store.docs(review.id, review.round);
-  const client = {
+  return {
     id: review.id,
     title: review.title,
     kind: review.kind,
@@ -107,6 +117,11 @@ function reviewPage(store, review) {
     })),
     marks: store.draft(review.id, review.round).marks,
   };
+}
+
+function reviewPage(store, review) {
+  const docs = store.docs(review.id, review.round);
+  const client = clientReview(store, review);
   const script = (value) =>
     JSON.stringify(value).replace(/<\//g, '<\\/').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return `<!DOCTYPE html>
@@ -130,6 +145,16 @@ var DOCS = ${script(docs.map((d) => d.html))};</script>
 </body></html>`;
 }
 
+// One document alone at the tablet's page width, for PageRenderer to photograph.
+function renderPage(store, review, index) {
+  const doc = store.docs(review.id, review.round)[index];
+  return `<!DOCTYPE html>
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link rel="stylesheet" href="/web/review.css">
+<style>html, body { overflow: visible; } #docLayer { position: static; width: ${PAGE_WIDTH}px; }</style></head>
+<body><div id="docLayer">${doc.html}</div></body></html>`;
+}
+
 function pendingForAgent(store, pending) {
   const { review, round, requests, feedback } = pending;
   const mark = (m, n) => {
@@ -147,6 +172,28 @@ function pendingForAgent(store, pending) {
 
 export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) {
   const store = new Store(home);
+  const renderer = new PageRenderer();
+  const self = () => `http://127.0.0.1:${server.address().port}`;
+
+  // A round's documents do not change, so their pages are rendered once and kept with it.
+  async function pages(id, index) {
+    const review = store.get(id);
+    const dir = store.roundDir(id, review.round, 'pages', String(index));
+    if (!fs.existsSync(path.join(dir, 'index.json'))) await renderer.render(`${self()}/r/${id}/render/${index}`, dir);
+    return dir;
+  }
+
+  // The native app sends ink alone; the rows it means come from where they sit on its pages.
+  function locate(id, marks) {
+    const review = store.get(id);
+    const docs = store.docs(id, review.round);
+    return marks.map((mark) => {
+      if (Array.isArray(mark.rows)) return mark;
+      const index = docs.findIndex((d) => d.id === mark.doc);
+      const page = readJsonFile(store.roundDir(id, review.round, 'pages', String(index), 'index.json'));
+      return { ...mark, rows: page ? rowsUnderInk(mark.ink ?? [], page.rows) : [] };
+    });
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://hub');
@@ -172,8 +219,14 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
         log('open', m[1]);
         return send(req, res, reviewPage(store, store.get(m[1])));
       }
-      if (req.method === 'GET' && (m = p.match(/^\/pages\/([0-9a-f]{8})\/(\d+)\/(index\.json|\d+\.png)$/))) {
-        const file = path.join(store.home, 'pages', m[1], m[2], m[3]);
+      if (req.method === 'GET' && (m = p.match(/^\/api\/r\/([0-9a-f]{8})$/))) {
+        return json(req, res, clientReview(store, store.get(m[1])));
+      }
+      if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/render\/(\d+)$/))) {
+        return send(req, res, renderPage(store, store.get(m[1]), Number(m[2])));
+      }
+      if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/pages\/(\d+)\/(index\.json|\d+\.png)$/))) {
+        const file = path.join(await pages(m[1], Number(m[2])), m[3]);
         if (fs.existsSync(file)) return send(req, res, fs.readFileSync(file), m[3].endsWith('.png') ? 'image/png' : 'application/json');
       }
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/fig\/([0-9a-f]+\.png)$/))) {
@@ -185,9 +238,9 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
       }
       if (req.method === 'POST' && (m = p.match(/^\/api\/r\/([0-9a-f]{8})\/(draft|submit|request)$/))) {
         const body = await readBody(req);
-        if (m[2] === 'draft') store.saveDraft(m[1], body.marks ?? []);
-        if (m[2] === 'submit') store.submit(m[1], body.marks ?? []);
-        if (m[2] === 'request') store.request(m[1], body.mark);
+        if (m[2] === 'draft') store.saveDraft(m[1], locate(m[1], body.marks ?? []));
+        if (m[2] === 'submit') store.submit(m[1], locate(m[1], body.marks ?? []));
+        if (m[2] === 'request') store.request(m[1], locate(m[1], [body.mark])[0]);
         if (m[2] !== 'draft') log(m[2], m[1]);
         return json(req, res, { ok: true });
       }
@@ -239,6 +292,7 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
     }
   });
 
+  server.on('close', () => renderer.close());
   server.on('clientError', (err, socket) => {
     log('rejected request', err.code, JSON.stringify(err.rawPacket?.toString('latin1') ?? ''));
     socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
