@@ -36,8 +36,13 @@ struct Mark {
 typedef QSharedPointer<Mark> MarkPtr;
 
 struct Doc {
-    Doc() : height(0), strip(512), scroll(0), loaded(false) {}
-    QString id, kind, title, path;
+    Doc() : context(false), plus(0), minus(0), height(0), strip(512), scroll(0), loaded(false) {}
+    QString id, kind, title, path, status;
+    bool context;
+    int plus, minus;
+    QList<int> rowNew;   // the source line of each row, 0 where a row has none
+    // Where each row sits on the rendered page, for jumping between a diff and its file.
+    QList<int> rowTop, rowBottom, rowIndex;
     int height, strip, scroll;
     bool loaded;
     QList<QPixmap> strips;
@@ -71,6 +76,18 @@ struct Undo {
     QPolygon stroke;
     int at, markAt;
 };
+
+inline void paintButton(QPainter &p, const QRect &rect, const QString &label, bool on, int px = 18) {
+    QFont f = p.font();
+    f.setPixelSize(px);
+    f.setBold(false);
+    p.setFont(f);
+    p.fillRect(rect, on ? Qt::black : Qt::white);
+    p.setPen(QPen(Qt::black, 2));
+    p.drawRect(rect.adjusted(1, 1, -1, -1));
+    p.setPen(on ? Qt::white : Qt::black);
+    p.drawText(rect, Qt::AlignCenter, label);
+}
 
 // The Eee Note's buttons arrive as function keys.
 inline QString buttonName(int key) {
@@ -196,7 +213,8 @@ class ReviewWidget : public QWidget {
     Q_OBJECT
 public:
     ReviewWidget(const QString &hub, const QString &id)
-        : hub(hub), reviewId(id), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0) {
+        : hub(hub), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
+          drawerOpen(false), drawerScroll(0), drawerHeight(0), jumpDoc(-1), jumpLine(0) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
         connect(&net, SIGNAL(finished(QNetworkReply *)), this, SLOT(fetched(QNetworkReply *)));
@@ -226,6 +244,7 @@ public slots:
         live << p;
         startY = p.y();
         startNoteH = noteH;
+        startDrawerScroll = drawerScroll;
         if (gesture == "rail") railTo(p.y());
         else if (gesture == "noteRail") {
             noteExtent = noteLength();
@@ -244,6 +263,7 @@ public slots:
         if (gesture == "rail") railTo(p.y());
         else if (gesture == "noteRail") noteRailTo(p.y());
         else if (gesture == "grip") dragGrip(p.y());
+        else if (gesture == "drawer") drawerScrollTo(startDrawerScroll - (p.y() - startY));
         else if ((gesture == "doc" || gesture == "note") && tool == "eraser") erase(p);
         else if (gesture == "doc" || gesture == "note") dirty |= QRect(last, p).normalized().adjusted(-4, -4, 4, 4);
     }
@@ -258,6 +278,8 @@ public slots:
         baker->hold(false);
         QPoint p = live.last();
         if (gesture == "grip") layoutChanged();
+        else if (gesture == "shade") closeDrawer();
+        else if (gesture == "drawer") { if (pathLength(live) < TAP_MAX) drawerTap(live.first()); }
         else if (gesture.startsWith("button:")) { if (buttonAt(p) == gesture) press(gesture.mid(7)); }
         else if ((gesture == "doc" || gesture == "note") && tool == "pen") endStroke();
         QRect trail = live.boundingRect().adjusted(-4, -4, 4, 4);
@@ -269,15 +291,16 @@ public slots:
     // The tablet's buttons, named as in main.cpp.
     bool button(const QString &name) {
         if (name == "back") {
-            if (openMark) closeNote();
+            if (drawerOpen) closeDrawer();
+            else if (openMark) closeNote();
             else leave();
         } else if (name == "home") saveThen("quitApp");
-        else if (name == "left") page(-1);
-        else if (name == "right") page(1);
+        else if (name == "left") drawerOpen ? drawerScrollTo(drawerScroll - drawerRect().height() * 3 / 4) : page(-1);
+        else if (name == "right") drawerOpen ? drawerScrollTo(drawerScroll + drawerRect().height() * 3 / 4) : page(1);
         else if (name == "g1") setTool("pen");
         else if (name == "g2") setTool("eraser");
         else if (name == "g3") undo();
-        else if (name == "g4") step(1);
+        else if (name == "g4") toggleDrawer();
         else return false;
         return true;
     }
@@ -309,6 +332,7 @@ protected:
         if (openMark && clip.intersects(noteRect())) paintNote(p);
         if (openMark && clip.intersects(noteRailRect())) paintNoteRail(p);
         if (clip.intersects(toolBarRect())) paintToolBar(p);
+        if (drawerOpen) paintDrawer(p, clip);
         if (live.size() > 1 && tool == "pen" && (gesture == "doc" || gesture == "note")) {
             p.setClipRect(clip & (gesture == "doc" ? docRect() : noteRect()));
             inkPen(p, gesture == "note" ? NOTE_INK_WIDTH : INK_WIDTH);
@@ -405,6 +429,7 @@ private:
 
     void loadReview(const QVariantMap &review) {
         title = review.value("title").toString();
+        round = review.value("round").toInt();
         kind = review.value("kind").toString();
         foreach (const QVariant &v, review.value("docs").toList()) {
             QVariantMap m = v.toMap();
@@ -413,6 +438,11 @@ private:
             d.kind = m.value("kind").toString();
             d.title = m.value("title").toString();
             d.path = m.value("path").toString();
+            d.status = m.value("status").toString();
+            d.context = m.value("context").toBool();
+            d.plus = m.value("plus").toInt();
+            d.minus = m.value("minus").toInt();
+            foreach (const QVariant &line, m.value("rowNew").toList()) d.rowNew << line.toInt();
             docs << d;
         }
         foreach (const QVariant &v, review.value("marks").toList()) {
@@ -436,11 +466,12 @@ private:
         showDoc(firstDocument());
     }
 
+    // A code review opens on the first changed file as the drawer's tree lists it, unless the
+    // agent's replies lead the round.
     int firstDocument() const {
         if (kind != "code" || docs.isEmpty() || docs[0].kind == "replies") return 0;
-        for (int i = 0; i < docs.size(); ++i)
-            if (docs[i].kind == "diff") return i;
-        return 0;
+        QList<int> order = diffOrder(QString());
+        return order.isEmpty() ? 0 : order.first();
     }
 
     void showDoc(int index) {
@@ -461,7 +492,21 @@ private:
         d.pngs.clear();
         d.requested.clear();
         for (int n = 0; n < count; ++n) d.strips << QPixmap(), d.pngs << QByteArray(), d.requested << false;
+        d.rowTop.clear();
+        d.rowBottom.clear();
+        d.rowIndex.clear();
+        foreach (const QVariant &row, page.value("rows").toList()) {
+            QVariantList r = row.toList();
+            if (r.size() < 3) continue;
+            d.rowTop << r[0].toInt();
+            d.rowBottom << r[1].toInt();
+            d.rowIndex << r[2].toInt();
+        }
         d.loaded = true;
+        if (index == jumpDoc) {
+            jumpDoc = -1;
+            jumpTo(jumpLine);
+        }
         requestStrips(index);
         if (index == cur) layoutChanged();
     }
@@ -783,16 +828,16 @@ private:
     QList<Button> toolButtons() const {
         QList<Button> out;
         QRect bar = toolBarRect();
-        const char *names[] = { "back", "pen", "eraser", "undo", "prev", "next", "send" };
-        const char *labels[] = { "Zur\xc3\xbc" "ck", "Stift", "Radierer", "\xe2\x86\xb6", "\xe2\x97\x80", "\xe2\x96\xb6", "Senden" };
-        int widths[] = { 92, 76, 104, 50, 50, 50, 98 };
+        const char *names[] = { "files", "pen", "eraser", "undo", "prev", "next" };
+        const char *labels[] = { "Dateien", "Stift", "Radierer", "\xe2\x86\xb6", "\xe2\x97\x80", "\xe2\x96\xb6" };
+        int widths[] = { 96, 76, 104, 50, 50, 50 };
         int x = 6;
-        for (int i = 0; i < 7; ++i) {
+        for (int i = 0; i < 6; ++i) {
             Button b;
             b.name = names[i];
             b.label = QString::fromUtf8(labels[i]);
             b.rect = QRect(x, bar.top() + 6, widths[i], TOOLBAR_H - 12);
-            b.on = QString(names[i]) == tool;
+            b.on = QString(names[i]) == tool || (i == 0 && drawerOpen);
             out << b;
             x += widths[i] + 6;
         }
@@ -800,16 +845,7 @@ private:
     }
 
     void paintButtons(QPainter &p, const QList<Button> &buttons) {
-        QFont f = font();
-        f.setPixelSize(18);
-        p.setFont(f);
-        foreach (const Button &b, buttons) {
-            p.fillRect(b.rect, b.on ? Qt::black : Qt::white);
-            p.setPen(QPen(Qt::black, 2));
-            p.drawRect(b.rect.adjusted(1, 1, -1, -1));
-            p.setPen(b.on ? Qt::white : Qt::black);
-            p.drawText(b.rect, Qt::AlignCenter, b.label);
-        }
+        foreach (const Button &b, buttons) paintButton(p, b.rect, b.label, b.on);
     }
 
     void paintNoteBar(QPainter &p) {
@@ -944,6 +980,11 @@ private:
 
     // ── Gestures ────────────────────────────────────────────────────────
     QString targetAt(const QPoint &p) {
+        if (drawerOpen) {
+            if (drawerRect().contains(p)) return "drawer";
+            QString b = toolBarRect().contains(p) ? buttonAt(p) : QString();
+            return b.isEmpty() ? "shade" : b;
+        }
         QString b = buttonAt(p);
         if (!b.isEmpty()) return b;
         if (railRect().contains(p)) return "rail";
@@ -962,7 +1003,7 @@ private:
     }
 
     void press(const QString &name) {
-        if (name == "back") leave();
+        if (name == "files") toggleDrawer();
         else if (name == "pen" || name == "eraser") setTool(name);
         else if (name == "undo") undo();
         else if (name == "prev") step(-1);
@@ -1110,18 +1151,304 @@ private:
         scheduleSave();
     }
 
-    // In a code review the arrows step through the diffs, or the whole files when one is
-    // shown; otherwise through every document.
+    // In a code review the arrows step through the changed files in the tree's order, to the
+    // whole file when one is shown; otherwise through every document.
     void step(int dir) {
         Doc *d = doc();
         if (!d) return;
-        QString along = kind == "code" && (d->kind == "diff" || d->kind == "file") ? d->kind : QString();
-        for (int i = cur + dir; i >= 0 && i < docs.size(); i += dir) {
-            if (along.isEmpty() || docs[i].kind == along) {
-                saveNow();
-                showDoc(i);
+        if (kind != "code" || (d->kind != "diff" && d->kind != "file")) {
+            go(cur + dir);
+            return;
+        }
+        QList<int> order = diffOrder(QString());
+        int at = -1;
+        for (int i = 0; i < order.size(); ++i)
+            if (docs[order[i]].path == d->path) at = i;
+        if (at + dir < 0 || at + dir >= order.size()) return;
+        int next = order[at + dir];
+        go(d->kind == "file" ? counterpart(next, "file") : next);
+    }
+
+    // The document of kind for the same path as docs[index], or -1.
+    int counterpart(int index, const QString &kindOf) const {
+        if (index < 0 || docs[index].path.isEmpty()) return -1;
+        for (int i = 0; i < docs.size(); ++i)
+            if (docs[i].kind == kindOf && docs[i].path == docs[index].path) return i;
+        return -1;
+    }
+
+    void go(int index, int line = 0) {
+        if (index < 0 || index >= docs.size()) return;
+        drawerOpen = false;
+        saveNow();
+        showDoc(index);
+        if (!line) return;
+        if (docs[index].loaded) jumpTo(line);
+        else {
+            jumpDoc = index;
+            jumpLine = line;
+        }
+    }
+
+    // The source line nearest a third down the view, as the web page takes it.
+    int lineAtView() {
+        Doc *d = doc();
+        if (!d) return 0;
+        int y = d->scroll + docH() / 3, best = -1, bestGap = 0;
+        for (int i = 0; i < d->rowIndex.size(); ++i) {
+            int line = d->rowIndex[i] < d->rowNew.size() ? d->rowNew[d->rowIndex[i]] : 0;
+            if (!line) continue;
+            int gap = qAbs((d->rowTop[i] + d->rowBottom[i]) / 2 - y);
+            if (best < 0 || gap < bestGap) best = line, bestGap = gap;
+        }
+        return qMax(best, 0);
+    }
+    void jumpTo(int line) {
+        Doc *d = doc();
+        if (!d) return;
+        for (int i = 0; i < d->rowIndex.size(); ++i) {
+            int at = d->rowIndex[i] < d->rowNew.size() ? d->rowNew[d->rowIndex[i]] : 0;
+            if (at >= line) {
+                d->scroll = d->rowTop[i] - docH() / 3;
+                clampScroll();
+                requestStrips(cur);
+                update();
                 return;
             }
+        }
+    }
+
+    // ── Drawer ──────────────────────────────────────────────────────────
+    // As on the web page: replies, documents, the changed files as a tree with folders that
+    // fold, files the agent added for context, and the round's actions.
+    struct DrawerRow {
+        enum Kind { Title, Meta, Section, File, Dir, Plain, Action } kind;
+        QString text, key;
+        int depth, doc, whole, top, height;
+        bool current;
+    };
+
+    QRect drawerRect() const { return QRect(0, 0, qMin(560, width() - 90), height() - TOOLBAR_H); }
+
+    void toggleDrawer() { drawerOpen ? closeDrawer() : openDrawer(); }
+    void openDrawer() {
+        drawerOpen = true;
+        drawerScroll = 0;
+        buildDrawer();
+        update();
+    }
+    void closeDrawer() {
+        drawerOpen = false;
+        update();
+    }
+    void drawerScrollTo(int y) {
+        int top = qBound(0, y, qMax(0, drawerHeight - drawerRect().height()));
+        if (top == drawerScroll) return;
+        drawerScroll = top;
+        update(drawerRect());
+    }
+
+    // The diff documents under prefix, in the tree's order: folders by name first, then files.
+    QList<int> diffOrder(const QString &prefix) const {
+        QList<int> out;
+        QStringList dirs;
+        for (int i = 0; i < docs.size(); ++i) {
+            if (docs[i].kind != "diff" || !docs[i].path.startsWith(prefix)) continue;
+            QString rest = docs[i].path.mid(prefix.size());
+            if (rest.contains('/') && !dirs.contains(rest.section('/', 0, 0))) dirs << rest.section('/', 0, 0);
+        }
+        dirs.sort();
+        foreach (const QString &dir, dirs) out += diffOrder(prefix + dir + "/");
+        for (int i = 0; i < docs.size(); ++i)
+            if (docs[i].kind == "diff" && docs[i].path.startsWith(prefix) && !docs[i].path.mid(prefix.size()).contains('/')) out << i;
+        return out;
+    }
+
+    int marksIn(const QString &docId) const {
+        int n = 0;
+        foreach (const MarkPtr &m, marks)
+            if (m->doc == docId) ++n;
+        return n;
+    }
+    QString marksNote(const QString &docId) const {
+        int n = marksIn(docId);
+        return n ? QString::fromUtf8(" \xc2\xb7 %1 Mark.").arg(n) : QString();
+    }
+
+    void addRow(DrawerRow::Kind kind, const QString &text, int height, const QString &key = QString(), int docIndex = -1,
+                int depth = 0, int whole = -1) {
+        DrawerRow r;
+        r.kind = kind;
+        r.text = text;
+        r.key = key;
+        r.depth = depth;
+        r.doc = docIndex;
+        r.whole = whole;
+        r.top = drawerHeight;
+        r.height = height;
+        r.current = docIndex >= 0 && (docIndex == cur || whole == cur);
+        drawerRows << r;
+        drawerHeight += height;
+    }
+
+    // A folder with a single subfolder and no files of its own shows as one row, as on GitHub.
+    void treeRows(const QString &prefix, int depth) {
+        QStringList dirs;
+        for (int i = 0; i < docs.size(); ++i) {
+            if (docs[i].kind != "diff" || !docs[i].path.startsWith(prefix)) continue;
+            QString rest = docs[i].path.mid(prefix.size());
+            if (rest.contains('/') && !dirs.contains(rest.section('/', 0, 0))) dirs << rest.section('/', 0, 0);
+        }
+        dirs.sort();
+        foreach (const QString &dir, dirs) {
+            QString label = dir, full = prefix + dir + "/";
+            for (;;) {
+                QStringList sub;
+                bool files = false;
+                for (int i = 0; i < docs.size(); ++i) {
+                    if (docs[i].kind != "diff" || !docs[i].path.startsWith(full)) continue;
+                    QString rest = docs[i].path.mid(full.size());
+                    if (!rest.contains('/')) files = true;
+                    else if (!sub.contains(rest.section('/', 0, 0))) sub << rest.section('/', 0, 0);
+                }
+                if (files || sub.size() != 1) break;
+                label += "/" + sub.first();
+                full += sub.first() + "/";
+            }
+            bool closed = collapsed.contains(full);
+            addRow(DrawerRow::Dir, QString::fromUtf8(closed ? "\xe2\x96\xb8 " : "\xe2\x96\xbe ") + label, 40, full, -1, depth);
+            if (!closed) treeRows(full, depth + 1);
+        }
+        for (int i = 0; i < docs.size(); ++i) {
+            if (docs[i].kind != "diff" || !docs[i].path.startsWith(prefix) || docs[i].path.mid(prefix.size()).contains('/')) continue;
+            QString text = QString::fromUtf8("%1  +%2 \xe2\x88\x92%3").arg(docs[i].title).arg(docs[i].plus).arg(docs[i].minus) + marksNote(docs[i].id);
+            addRow(DrawerRow::File, text, 40, docs[i].status, i, depth, counterpart(i, "file"));
+        }
+    }
+
+    void plainRows(const QString &section, bool (*wanted)(const Doc &, const QList<Doc> &)) {
+        bool any = false;
+        for (int i = 0; i < docs.size(); ++i) {
+            if (!wanted(docs[i], docs)) continue;
+            if (!any) addRow(DrawerRow::Section, section, 38);
+            any = true;
+            addRow(DrawerRow::Plain, (docs[i].path.isEmpty() ? docs[i].title : docs[i].path) + marksNote(docs[i].id), 40, QString(), i);
+        }
+    }
+    static bool isReplies(const Doc &d, const QList<Doc> &) { return d.kind == "replies"; }
+    static bool isContext(const Doc &d, const QList<Doc> &) { return d.context; }
+    static bool isDocument(const Doc &d, const QList<Doc> &all) {
+        if (d.context) return false;
+        if (d.kind == "spec") return true;
+        if (d.kind != "file") return false;
+        foreach (const Doc &o, all)
+            if (o.kind == "diff" && o.path == d.path) return false;
+        return true;
+    }
+
+    void buildDrawer() {
+        drawerRows.clear();
+        drawerHeight = 10;
+        addRow(DrawerRow::Title, title, 40);
+        addRow(DrawerRow::Meta, QString::fromUtf8("Runde %1 \xc2\xb7 %2 Markierungen").arg(round).arg(marks.size()), 34);
+        Doc *d = doc();
+        if (d && d->kind == "diff" && counterpart(cur, "file") >= 0)
+            addRow(DrawerRow::Action, QString::fromUtf8("Ganze Datei an dieser Stelle \xe2\x86\x92"), 56, "toFile");
+        if (d && d->kind == "file" && counterpart(cur, "diff") >= 0)
+            addRow(DrawerRow::Action, QString::fromUtf8("Zum Diff an dieser Stelle \xe2\x86\x92"), 56, "toDiff");
+        plainRows("Antworten", isReplies);
+        plainRows("Dokumente", isDocument);
+        int before = drawerRows.size();
+        treeRows(QString(), 0);
+        if (drawerRows.size() > before) {
+            DrawerRow section;
+            section.kind = DrawerRow::Section;
+            section.text = QString::fromUtf8("Ge\xc3\xa4nderte Dateien");
+            section.depth = 0;
+            section.doc = section.whole = -1;
+            section.height = 38;
+            section.current = false;
+            section.top = drawerRows[before].top;
+            for (int i = before; i < drawerRows.size(); ++i) drawerRows[i].top += section.height;
+            drawerRows.insert(before, section);
+            drawerHeight += section.height;
+        }
+        plainRows("Nachgeliefert", isContext);
+        drawerHeight += 10;
+        addRow(DrawerRow::Action, QString("An den Agenten senden (%1)").arg(marks.size()), 56, "send");
+        addRow(DrawerRow::Action, "Alle Reviews", 56, "inbox");
+        addRow(DrawerRow::Action, "App beenden", 56, "quit");
+        drawerHeight += 10;
+    }
+
+    void paintDrawer(QPainter &p, const QRect &clip) {
+        QRect r = drawerRect();
+        QRect shade(r.right() + 1, 0, width() - r.width(), r.height());
+        if (clip.intersects(shade)) p.fillRect(shade & clip, QColor(0, 0, 0, 64));
+        if (!clip.intersects(r)) return;
+        p.save();
+        p.setClipRect(r & clip);
+        p.fillRect(r, Qt::white);
+        p.fillRect(r.right() - 2, 0, 3, r.height(), Qt::black);
+        QFont f = font();
+        foreach (const DrawerRow &row, drawerRows) {
+            QRect box(0, row.top - drawerScroll, r.width() - 3, row.height);
+            if (!box.intersects(clip)) continue;
+            int left = 14 + row.depth * 18;
+            QRect text = box.adjusted(left, 0, -12, 0);
+            f.setBold(row.kind == DrawerRow::Title || row.kind == DrawerRow::Section);
+            f.setPixelSize(row.kind == DrawerRow::Title ? 22 : row.kind == DrawerRow::Meta ? 15 : 17);
+            p.setFont(f);
+            p.setPen(Qt::black);
+            if (row.current) p.fillRect(box, QColor(0xdd, 0xdd, 0xdd));
+            switch (row.kind) {
+            case DrawerRow::Action:
+                paintButton(p, box.adjusted(12, 6, -12, -6), row.text, row.key == "toFile" || row.key == "toDiff" || row.key == "send", 17);
+                break;
+            case DrawerRow::Section:
+                p.drawText(text, Qt::AlignLeft | Qt::AlignBottom, row.text);
+                p.fillRect(box.left() + 14, box.bottom(), box.width() - 28, 1, Qt::black);
+                break;
+            case DrawerRow::File: {
+                QRect st(text.left(), box.top() + 9, 22, 22);
+                p.drawRect(st);
+                p.drawText(st, Qt::AlignCenter, row.key);
+                QRect rest = text.adjusted(30, 0, 0, 0);
+                if (row.whole >= 0) {
+                    QRect pill = wholeRect(box);
+                    p.drawRect(pill);
+                    p.drawText(pill, Qt::AlignCenter, "Datei");
+                    rest.setRight(pill.left() - 8);
+                }
+                p.drawText(rest, Qt::AlignLeft | Qt::AlignVCenter, p.fontMetrics().elidedText(row.text, Qt::ElideMiddle, rest.width()));
+                break;
+            }
+            default:
+                p.drawText(text, Qt::AlignLeft | Qt::AlignVCenter, p.fontMetrics().elidedText(row.text, Qt::ElideMiddle, text.width()));
+            }
+        }
+        p.restore();
+    }
+    QRect wholeRect(const QRect &box) const { return QRect(box.right() - 72, box.top() + 8, 60, box.height() - 16); }
+
+    void drawerTap(const QPoint &p) {
+        foreach (const DrawerRow &row, drawerRows) {
+            QRect box(0, row.top - drawerScroll, drawerRect().width() - 3, row.height);
+            if (!box.contains(p)) continue;
+            if (row.kind == DrawerRow::Dir) {
+                if (collapsed.contains(row.key)) collapsed.remove(row.key);
+                else collapsed.insert(row.key);
+                buildDrawer();
+                drawerScrollTo(drawerScroll);
+                update(drawerRect());
+            } else if (row.kind == DrawerRow::File) go(row.whole >= 0 && wholeRect(box).contains(p) ? row.whole : row.doc);
+            else if (row.kind == DrawerRow::Plain) go(row.doc);
+            else if (row.key == "toFile") go(counterpart(cur, "file"), lineAtView());
+            else if (row.key == "toDiff") go(counterpart(cur, "diff"), lineAtView());
+            else if (row.key == "send") submit();
+            else if (row.key == "inbox") leave();
+            else if (row.key == "quit") saveThen("quitApp");
+            return;
         }
     }
 
@@ -1181,6 +1508,7 @@ private:
     }
 
     QString hub, reviewId, title, kind, message;
+    int round;
     QNetworkAccessManager net;
     QList<Doc> docs;
     QList<MarkPtr> marks;
@@ -1198,6 +1526,10 @@ private:
     QMap<QString, Tile> tiles;
     QMap<QString, QImage> arts;
     QTime lastScroll, sinceBeat;
+    bool drawerOpen;
+    int drawerScroll, drawerHeight, startDrawerScroll, jumpDoc, jumpLine;
+    QList<DrawerRow> drawerRows;
+    QSet<QString> collapsed;
     QTimer pulse;
 };
 

@@ -9,22 +9,26 @@ Agent ──MCP──▶ eee-review mcp ──HTTP──▶ Hub (Laptop, Port 87
 ```
 
 - **Hub** (`src/hub`): Hält die Reviews unter `~/.eee-review` und rendert Markdown, Code und
-  Diffs zu schlichtem HTML. Er liefert Eingangsliste und Review-Seiten ans Tablet. Die
-  Agenten-API ist nur über localhost erreichbar.
+  Diffs zu schlichtem HTML. Fürs Tablet fotografiert er jede Seite in Chromium in der Breite
+  des Tablets und legt sie als 4-Bit-Graustufenstreifen ab, samt der Position jeder Zeile.
+  Markierungen ordnet er anhand dieser Positionen den Quellzeilen zu. Die Agenten-API ist nur
+  über localhost erreichbar.
 - **MCP-Server** (`src/mcp`): Stellt dem Agenten die Tools `review_create`, `review_wait`,
   `review_respond`, `review_add_context`, `review_close` und `review_list` bereit. Ist der Hub
   noch nicht gestartet, startet der MCP-Server ihn im Hintergrund.
-- **Tablet-Seite** (`web/`): Leiste unten mit Stift und Radierer. Dazu kommen eine Notiz,
-  die sich größer ziehen lässt und endlos weitergeht, eine Scrollleiste mit den Nummern der
-  Markierungen, Stempel (OK, Nein, ?) und die Schaltfläche „Frage", die sofort Kontext beim
-  Agenten anfordert. Jeder Strich wird automatisch gespeichert.
+- **eeereview** (`native/`): Qt-Embedded-4.6-App für das Tablet, ohne WebKit. Sie zeigt die
+  Streifen des Hubs, sodass Blättern und Scrollen nur Pixel kopiert, und liest den Stift
+  direkt von `/dev/input/event2`, mit rund 130 Punkten pro Sekunde. Leiste unten mit Dateien,
+  Stift und Radierer; dazu eine Notiz, die sich größer ziehen lässt und endlos weitergeht,
+  Scrollleisten mit den Nummern der Markierungen, Stempel (OK, Nein, ?) und die Schaltfläche
+  „Frage", die sofort Kontext beim Agenten anfordert. Jeder Strich wird automatisch
+  gespeichert. Tinte brennt ein Hintergrund-Thread in die Bilder ein, sobald gescrollt wird.
 - **Tasten am Tablet**: Links und Rechts blättern im Dokument oder in der Notiz, je nachdem,
   wo zuletzt geschrieben wurde. Generic 1 bis 4 sind Stift, Radierer, Rückgängig und Dateien.
   Back schließt Dateiliste oder Notiz und führt sonst zur Eingangsliste; Home speichert und
   beendet die App.
-- **eeereview** (`native/`): Qt-Embedded-4.6-App für das Tablet. Sie zeigt die Seiten in
-  einem WebView und liest den Stift direkt von `/dev/input/event2`, mit rund 130 Punkten pro
-  Sekunde. Die Tinte zeichnet sie selbst über die Seite.
+- **Web-Seite** (`web/`): Dieselbe Oberfläche für einen Browser, etwa zum Ausprobieren am
+  Laptop unter `http://localhost:8770/`.
 
 ## Einrichten
 
@@ -81,5 +85,6 @@ npm test
 EEE_REVIEW_HOME=/tmp/eee EEE_REVIEW_PORT=8771 node src/cli.mjs hub
 ```
 
-Die Tablet-Seite muss in QtWebKit 533 laufen, also Safari-5-Niveau: ES5 ohne `bind`, kein
-`classList`, kein Flexbox.
+Die Web-Seite ist für QtWebKit 533 geschrieben, also Safari-5-Niveau: ES5 ohne `bind`, kein
+`classList`, kein Flexbox. `web/review.js` ist die Referenz dafür, wie sich Markierungen und
+Notizen verhalten; die App in `native/eeereview/native.h` folgt ihr.

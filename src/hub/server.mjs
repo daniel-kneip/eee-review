@@ -23,7 +23,6 @@ const TABLET_FILES = {
   eeelink: 'eeelink/eeelink',
   'start.sh': 'tablet/start.sh',
   qcopspy: 'qcopspy/qcopspy',
-  pagetest: 'pagetest/pagetest',
 };
 const TABLET_ICONS = {
   'icon_b_eeereview.png': () => iconPng(259, 261, 5),
@@ -80,7 +79,7 @@ function inboxPage(store) {
       (r) =>
         `<a class="item${r.status === 'open' ? ' new' : ''}" href="/r/${r.id}"><b>${escapeHtml(r.title)}</b><span>${
           r.kind === 'code' ? 'Code' : 'Dokument'
-        } · Runde ${r.round} · ${STATUS[r.status] ?? r.status}</span></a><a class="native" href="/r/${r.id}/native">nativ öffnen (Test)</a>`,
+        } · Runde ${r.round} · ${STATUS[r.status] ?? r.status}</span></a>`,
     )
     .join('');
   return `<!DOCTYPE html>
@@ -89,7 +88,7 @@ function inboxPage(store) {
 <title>Reviews</title><link rel="stylesheet" href="/web/inbox.css"></head>
 <body><button type="button" id="quit" onclick="eeeApp.quit()">Beenden</button><h1>Reviews</h1>${
     items || '<p class="empty">Nichts offen. Neue Reviews erscheinen hier von selbst.</p>'
-  }<script type="text/javascript">if (window.eeeApp) { document.getElementById('quit').style.display = 'block'; document.body.className = 'app'; }
+  }<script type="text/javascript">if (window.eeeApp) document.getElementById('quit').style.display = 'block';
 window.keys = { press: function (name) {
   if (name === 'left' || name === 'right') { window.scrollBy(0, (name === 'left' ? -0.75 : 0.75) * window.innerHeight); return true; }
   return false;
@@ -203,6 +202,10 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
     try {
       if (req.method === 'GET' && p === '/api/ping') return json(req, res, { ok: true });
       if (req.method === 'GET' && p === '/') return send(req, res, inboxPage(store));
+      if (req.method === 'GET' && p === '/api/inbox') {
+        const open = store.list().filter((r) => r.status !== 'closed');
+        return json(req, res, open.map((r) => ({ id: r.id, title: r.title, kind: r.kind, round: r.round, status: r.status, label: STATUS[r.status] ?? r.status })));
+      }
       if (req.method === 'GET' && (m = p.match(/^\/web\/([\w.-]+\.(js|css))$/))) {
         const file = path.join(root, 'web', m[1]);
         if (fs.existsSync(file))
