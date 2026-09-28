@@ -1,11 +1,13 @@
 import MarkdownIt from 'markdown-it';
+import { commentHtml } from './comments.mjs';
 import { escapeHtml, highlightLines } from './highlight.mjs';
 
 // Renders markdown to an HTML fragment in which every block a mark can land on carries
 // data-row, indexing into rows: the block's source lines and plain text. The tablet
 // measures the rows itself, so a mark resolves to "lines 12–14" without any rendering here.
-// Fenced code gets a row per line; mermaid fences are left to renderFigures.
-export function renderMarkdown(source) {
+// Fenced code gets a row per line; mermaid fences are left to renderFigures. Comments follow
+// the block their line is in, and lead the document when they have none.
+export function renderMarkdown(source, comments = [], path = null) {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
   const rows = [];
   const addRow = (token, text) => {
@@ -26,6 +28,7 @@ export function renderMarkdown(source) {
       else if (t.type === 'list_item_open') addRow(t, itemText(tokens, i));
       else if (t.type === 'tr_open') addRow(t, rowText(tokens, i));
     }
+    placeComments(state, rows, comments, path);
   });
 
   md.renderer.rules.fence = (tokens, idx) => {
@@ -50,6 +53,30 @@ export function renderMarkdown(source) {
 
   const html = md.render(source);
   return { html: `<div class="doc spec">${html}</div>`, rows };
+}
+
+function placeComments(state, rows, comments, path) {
+  const tokens = state.tokens;
+  const blocks = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.level !== 0 || t.nesting === -1 || !t.map) continue;
+    let end = i;
+    if (t.nesting === 1) while (!(tokens[end].level === 0 && tokens[end].nesting === -1)) end++;
+    blocks.push({ from: t.map[0] + 1, to: t.map[1], after: end + 1 });
+  }
+  const at = (line) => {
+    if (!line || !blocks.length) return 0;
+    const inside = blocks.find((b) => b.from <= line && line <= b.to);
+    return (inside ?? blocks.filter((b) => b.from <= line).at(-1) ?? blocks[0]).after;
+  };
+  const inserts = comments.map((c, n) => ({ index: at(c.line), n, c }));
+  inserts.sort((a, b) => b.index - a.index || b.n - a.n);
+  for (const { index, c } of inserts) {
+    const token = new state.Token('html_block', '', 0);
+    token.content = commentHtml(rows, c, path);
+    tokens.splice(index, 0, token);
+  }
 }
 
 function itemText(tokens, start) {

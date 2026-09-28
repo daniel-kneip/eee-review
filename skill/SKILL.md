@@ -14,14 +14,62 @@ the marks back.
 - A spec or plan: `review_create` with `kind: "spec"` and the markdown files. Mermaid blocks
   are rendered as images; any other file is shown whole with line numbers.
 - Code: `review_create` with `kind: "code"`. Without `head` it shows the working tree against
-  `base` (default `HEAD`), new files included. With `base` and `head` it shows the change between
-  two commits. When the user names files or folders, pass them as `files`: the review then shows
-  only their changes, and a named file without changes is shown whole.
+  `base` (default `HEAD`), new files included. With `base` and `head` it shows what `head`
+  changed since it branched off `base`, as a pull request does. When the user names files or
+  folders, pass them as `files`: the review then shows only their changes, and a named file
+  without changes is shown whole.
 - Give it a short title. It is what the user sees in the tablet's inbox.
 - Pass `repo` as the project's absolute path unless you know the MCP server runs inside the
   project. Kiro starts it elsewhere; without `repo` the call then fails and asks for it.
 
-## Waiting
+## Comments
+
+`review_create` and `review_respond` take `comments`, shown as boxes in the documents:
+
+- With `file` and `line` a comment sits below that line, in the diff and in the whole file.
+  `side: "old"` puts it on a removed line of the diff. A line the review does not show moves
+  the comment to the end of the file's document.
+- With `file` alone it leads that file's documents. Without `file` it goes on the overview.
+- `author` and `text` are required. `at` is a date to show, and `replies` is the thread under it.
+  `ref` is your handle for it, such as the platform's comment id. It comes back with any mark
+  on the comment.
+
+`overview` is markdown that opens the review as a document of its own, ahead of the files.
+Comments without a file follow it.
+
+Use comments for what belongs next to the code: remarks from colleagues, and your own notes
+for the user, such as "this is the one change that affects callers". Keep them short. Your
+reasoning belongs in replies.
+
+A mark on a comment comes back with the comment in its text: `[Kommentar <ref> von <author>
+zu <file>:<line>] ...`. It means the user is answering or judging that comment.
+
+`review_respond` replaces the comments when you pass them, and keeps them when you leave them
+out. Pass the whole list each time, updated, for example with a colleague's new reply.
+
+## Pull requests
+
+When the user asks you to bring a pull request (Bitbucket, GitHub, ...) to the tablet:
+
+1. Fetch the PR with your own access to the platform: its details, its comments and threads,
+   and its source and target branches.
+2. Fetch both branches into the local clone, without touching the user's working tree
+   (`git fetch origin <source> <target>`). Only check the branch out if the user asks for that.
+3. Call `review_create` with `kind: "code"`, `base` as the target branch (such as
+   `origin/main`) and `head` as the PR's source commit.
+   - `overview`: the PR's title, author, branches, state, reviewers and approvals, link, and
+     description, as markdown.
+   - `comments`: every comment, with inline comments at their file and line and replies as
+     their thread. Set `ref` to the platform's comment id.
+   - Leave out comments that are resolved or outdated unless the user wants them.
+4. Review round by round as usual.
+5. Post nothing on the PR until the user says so. Then draft the PR comments from the marks and
+   show them to the user in the next round's replies, or in the chat if the review is closed.
+   - Inline comments go at the file and line of their mark.
+   - A mark on a colleague's comment becomes a reply in that thread, by its `ref`.
+   - Post them once the user approves the drafts.
+   - Write them in the user's voice and language, not as notes about the review.
+
 
 Call `review_wait` right after creating the review. It returns when the user sends the round,
 or earlier when they ask for context mid-review. It returns "wartet noch" after its timeout;

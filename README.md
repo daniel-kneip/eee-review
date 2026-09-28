@@ -67,6 +67,17 @@ die Mac-Seite spricht es über libusb an, und das Tablet nutzt `/dev/ttyGS0`.
   ihn nur noch übers Kabel. Mit abgeschaltetem WLAN ist dann auch das Telnet des Tablets
   von außen nicht mehr zu erreichen.
 
+## Pull Requests und Kommentare
+
+„Hol mir PR 123 aufs Tablet": Der Agent holt den PR mit seinem eigenen Zugang zur Plattform
+(Bitbucket, GitHub, ...). Die beiden Branches lädt er ins lokale Repository und schickt ein
+Code-Review mit dem Zielbranch als `base` und dem PR-Commit als `head`. Der Hub zeigt, was der
+Branch seit der Abzweigung geändert hat. Die PR-Details kommen als `overview` mit und stehen
+auf einer eigenen Seite vorne. Die Kommentare der Kollegen kommen als `comments` mit und
+stehen als Kasten unter ihrer Zeile, samt Thread. Eine Markierung auf einem Kommentar sagt dem
+Agenten, welchen Kommentar du meinst. Kommentare in den PR schreibt er erst, wenn du es sagst
+und seine Entwürfe freigegeben hast. Eigene Hinweise im Code kann der Agent genauso mitschicken.
+
 ## Ohne Laptop
 
 Solange der Hub erreichbar ist, lädt die App alle offenen Reviews samt Seiten nach

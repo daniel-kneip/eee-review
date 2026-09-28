@@ -327,3 +327,38 @@ canvas {
 .hljs-literal {
   color: #333;
 }
+
+/* Comments the agent brought along, from a pull request or its own */
+.comment {
+  font: 15px/1.4 sans-serif;
+  border: 2px solid #000;
+  border-left-width: 8px;
+  background: #fff;
+  margin: 6px 10px 8px 12px;
+  padding: 6px 10px;
+  white-space: normal;
+}
+.comment .at {
+  font: bold 12px sans-serif;
+  color: #444;
+  margin-bottom: 3px;
+}
+.comment .by {
+  font: bold 13px sans-serif;
+  color: #333;
+}
+.comment .text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.comment .thread {
+  border-top: 1px solid #999;
+  margin-top: 6px;
+  padding: 4px 0 0 14px;
+}
+.code tr.note td {
+  padding: 0;
+}
+.code .notes {
+  padding: 4px 0;
+}

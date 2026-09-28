@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { commentHtml } from '../render/comments.mjs';
 import { changedFiles, fileAt, renderDiff, renderFile } from '../render/diff.mjs';
 import { renderFigures } from '../render/figures.mjs';
 import { strokesBounds, strokesToPng } from '../render/ink.mjs';
@@ -72,7 +73,9 @@ export class Store extends EventEmitter {
   // kind 'code': the change between base and head (or the working tree) in repo, a diff and
   // a whole-file view per touched file. Files, when given, narrow the change to those paths
   // (a folder takes everything under it); a listed file that did not change is shown whole.
-  async create({ title, kind = 'spec', repo, files = [], base = 'HEAD', head = null }) {
+  // overview (markdown) and comments without a file open the review as a document of their
+  // own; comments with a file sit at their line (see render/comments.mjs).
+  async create({ title, kind = 'spec', repo, files = [], base = 'HEAD', head = null, overview = null, comments = [] }) {
     const review = {
       id: newId(),
       title,
@@ -81,6 +84,8 @@ export class Store extends EventEmitter {
       base,
       head,
       files,
+      overview,
+      comments,
       round: 1,
       status: 'open',
       createdAt: new Date().toISOString(),
@@ -92,6 +97,8 @@ export class Store extends EventEmitter {
 
   async buildDocs(review) {
     const docs = [];
+    const comments = review.comments ?? [];
+    const on = (file) => comments.filter((c) => c.file === file);
     let unchanged = review.files;
     if (review.kind === 'code') {
       const wanted = (file) => (want) => file === want || file.startsWith(want.replace(/\/?$/, '/'));
@@ -109,25 +116,49 @@ export class Store extends EventEmitter {
           status: file.untracked ? 'A' : file.status,
           plus: lines.filter((l) => l.kind === 'add').length,
           minus: lines.filter((l) => l.kind === 'del').length,
-          ...renderDiff(file),
+          ...renderDiff(file, on(file.path)),
         });
         if (file.content !== null) {
           docs.push({
             kind: 'file',
             path: file.path,
             title: path.basename(file.path),
-            ...renderFile(file.path, file.content, changed),
+            ...renderFile(
+              file.path,
+              file.content,
+              changed,
+              on(file.path).filter((c) => c.line && c.side !== 'old'),
+            ),
           });
         }
       }
     }
     for (const file of unchanged) docs.push(this.renderSource(review, file));
-    return docs;
+    const overview = this.renderOverview(review, docs);
+    return overview ? [overview, ...docs] : docs;
+  }
+
+  // PR details and comments on no file shown, ahead of everything else.
+  renderOverview(review, docs) {
+    const comments = review.comments ?? [];
+    const general = comments.filter((c) => !c.file);
+    const elsewhere = comments.filter((c) => c.file && !docs.some((d) => d.path === c.file));
+    if (!review.overview && !general.length && !elsewhere.length) return null;
+    const { html, rows } = renderMarkdown(review.overview ?? '');
+    const section = (heading, list, options) =>
+      list.length ? `<h2>${heading}</h2>${list.map((c) => commentHtml(rows, c, c.file, options)).join('')}` : '';
+    const more =
+      section('Kommentare', general) +
+      section('Kommentare zu weiteren Dateien', elsewhere, { away: true, named: true });
+    return { kind: 'spec', title: 'Übersicht', path: null, html: html.replace(/<\/div>$/, `${more}</div>`), rows };
   }
 
   renderSource(review, file) {
     const content = fileAt(review.repo, file, review.kind === 'code' ? review.head : null);
-    const rendered = /\.(md|markdown)$/i.test(file) ? renderMarkdown(content) : renderFile(file, content);
+    const comments = (review.comments ?? []).filter((c) => c.file === file);
+    const rendered = /\.(md|markdown)$/i.test(file)
+      ? renderMarkdown(content, comments, file)
+      : renderFile(file, content, new Set(), comments);
     return {
       kind: /\.(md|markdown)$/i.test(file) ? 'spec' : 'file',
       path: file,
@@ -232,11 +263,13 @@ export class Store extends EventEmitter {
 
   // The agent's answers start the next round: its replies become a document of their own at
   // the top, next to your notes, and the sources are rendered again to show what changed.
-  async respond(id, { replies = [], files = null, rerender = true }) {
+  async respond(id, { replies = [], files = null, rerender = true, overview, comments }) {
     const review = this.get(id);
     const round = review.round;
     const marks = this.feedback(id, round)?.marks ?? this.draft(id, round).marks;
     if (files) review.files = files;
+    if (overview !== undefined) review.overview = overview;
+    if (comments !== undefined) review.comments = comments;
     const docs = rerender ? await this.buildDocs(review) : this.docs(id, round).filter((d) => d.kind !== 'replies');
     const repliesDoc = this.renderReplies(review, round, marks, replies);
     writeJson(this.roundDir(id, round, 'replies.json'), replies);

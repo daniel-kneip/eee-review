@@ -839,9 +839,9 @@
   }
 
   // A code review opens on the first changed file as the tree lists it, unless the agent's
-  // replies lead the round.
+  // replies or its overview lead the round (the only documents without a path).
   function firstDocument() {
-    if (R.kind !== 'code' || R.docs[0].kind === 'replies') return 0;
+    if (R.kind !== 'code' || !R.docs[0].path) return 0;
     var order = diffOrder(changeTree(), []);
     return order.length ? order[0] : 0;
   }

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { CommentPool, commentHtml } from './comments.mjs';
 import { escapeHtml, highlightLines, languageOf } from './highlight.mjs';
 
 const git = (repo, ...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 });
@@ -11,9 +12,10 @@ const WHOLE_FILE_MAX = 1200;
 const WINDOW = 150;
 
 // The files a change touches, with their hunks. base alone compares the working tree with
-// it (uncommitted work when base is HEAD); base and head compare two commits.
+// it (uncommitted work when base is HEAD); with head it is what head changed since it left
+// base, as a pull request shows it.
 export function changedFiles(repo, base = 'HEAD', head = null) {
-  const range = head ? [base, head] : [base];
+  const range = head ? [`${base}...${head}`] : [base];
   const names = git(repo, 'diff', '--name-status', '-M', ...range)
     .split('\n')
     .filter(Boolean)
@@ -83,8 +85,21 @@ function tableRow(rows, path, l, html, withOld) {
   return `<tr class="${l.kind}" data-row="${index}">${numbers}<td class="sign">${SIGN[l.kind]}</td><td class="src">${html || ' '}</td></tr>`;
 }
 
-export function renderDiff(file) {
+// A comment at a line gets a table row of its own right below it.
+function commentRows(rows, path, comments, columns) {
+  return comments.map((c) => `<tr class="note"><td colspan="${columns}">${commentHtml(rows, c, path)}</td></tr>`).join('');
+}
+
+// Comments on the file as a whole lead, those at lines not shown close the document.
+function framed(rows, path, pool) {
+  const top = pool.general.map((c) => commentHtml(rows, c, path)).join('');
+  const bottom = pool.unplaced.map((c) => commentHtml(rows, c, path, { away: true })).join('');
+  return { top: top && `<div class="notes">${top}</div>`, bottom: bottom && `<div class="notes">${bottom}</div>` };
+}
+
+export function renderDiff(file, comments = []) {
   const rows = [];
+  const pool = new CommentPool(comments);
   const language = languageOf(file.path);
   const added = file.hunks.flatMap((h) => h.lines).filter((l) => l.kind === 'add').length;
   const removed = file.hunks.flatMap((h) => h.lines).filter((l) => l.kind === 'del').length;
@@ -94,18 +109,25 @@ export function renderDiff(file) {
         h.lines.map((l) => l.code),
         language,
       );
-      return `<div class="hunk">${escapeHtml(h.header)}</div><table>${h.lines.map((l, i) => tableRow(rows, file.path, l, html[i], true)).join('')}</table>`;
+      const lines = h.lines.map(
+        (l, i) =>
+          tableRow(rows, file.path, l, html[i], true) +
+          commentRows(rows, file.path, [...pool.take('new', l.new), ...pool.take('old', l.old)], 4),
+      );
+      return `<div class="hunk">${escapeHtml(h.header)}</div><table>${lines.join('')}</table>`;
     })
     .join('');
   const moved = file.oldPath !== file.path ? ` · von ${escapeHtml(file.oldPath)}` : '';
+  const { top, bottom } = framed(rows, file.path, pool);
   return {
-    html: `<div class="doc code"><div class="head">${escapeHtml(file.path)}</div><div class="sub">Diff · +${added} −${removed}${moved}</div>${body}</div>`,
+    html: `<div class="doc code"><div class="head">${escapeHtml(file.path)}</div><div class="sub">Diff · +${added} −${removed}${moved}</div>${top}${body}${bottom}</div>`,
     rows,
   };
 }
 
-export function renderFile(path, content, changedLines = new Set()) {
+export function renderFile(path, content, changedLines = new Set(), comments = []) {
   const rows = [];
+  const pool = new CommentPool(comments);
   const lines = content.replace(/\n$/, '').split('\n');
   let from = 1;
   let to = lines.length;
@@ -117,21 +139,19 @@ export function renderFile(path, content, changedLines = new Set()) {
   const body = html
     .map((h, i) => {
       const n = from + i;
-      return tableRow(
-        rows,
-        path,
-        { kind: changedLines.has(n) ? 'add' : 'ctx', old: null, new: n, code: lines[n - 1] },
-        h,
-        false,
+      return (
+        tableRow(rows, path, { kind: changedLines.has(n) ? 'add' : 'ctx', old: null, new: n, code: lines[n - 1] }, h, false) +
+        commentRows(rows, path, pool.take('new', n), 3)
       );
     })
     .join('');
+  const { top, bottom } = framed(rows, path, pool);
   const range =
     from === 1 && to === lines.length ? `${lines.length} Zeilen` : `Zeilen ${from}–${to} von ${lines.length}`;
   return {
-    html: `<div class="doc code"><div class="head">${escapeHtml(path)}</div><div class="sub">Ganze Datei · ${range}</div>${
+    html: `<div class="doc code"><div class="head">${escapeHtml(path)}</div><div class="sub">Ganze Datei · ${range}</div>${top}${
       from > 1 ? `<div class="gap">… ${from - 1} Zeilen davor</div>` : ''
-    }<table>${body}</table>${to < lines.length ? `<div class="gap">… ${lines.length - to} Zeilen danach</div>` : ''}</div>`,
+    }<table>${body}</table>${to < lines.length ? `<div class="gap">… ${lines.length - to} Zeilen danach</div>` : ''}${bottom}</div>`,
     rows,
   };
 }

@@ -429,9 +429,9 @@ private:
     }
 
     // A code review opens on the first changed file as the drawer's tree lists it, unless the
-    // agent's replies lead the round.
+    // agent's replies or its overview lead the round (the only documents without a path).
     int firstDocument() const {
-        if (kind != "code" || docs.isEmpty() || docs[0].kind == "replies") return 0;
+        if (kind != "code" || docs.isEmpty() || docs[0].path.isEmpty()) return 0;
         QList<int> order = diffOrder(QString());
         return order.isEmpty() ? 0 : order.first();
     }

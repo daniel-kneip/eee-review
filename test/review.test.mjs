@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import zlib from 'node:zlib';
 import { startHub } from '../src/hub/server.mjs';
+import { Store } from '../src/hub/store.mjs';
 import { strokesToPng } from '../src/render/ink.mjs';
 import { renderMarkdown } from '../src/render/markdown.mjs';
 
@@ -163,6 +164,64 @@ test('a code review of the files asked for goes to the tablet as pages and marku
       (await (await fetch(`${base}/r/${review.id}`)).text()).match(/var REVIEW = (.*);\n/)[1],
     );
     assert.equal(withContext.docs.filter((d) => d.context).length, 0, 'a file already shown whole is not added twice');
+  } finally {
+    server.close();
+  }
+});
+
+test('a pull request comes with its details and comments, shows only what its branch changed, and marks on a comment name it', async () => {
+  const repo = tempRepo();
+  const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: repo, encoding: 'utf8' });
+  git('branch', '-M', 'main');
+  git('checkout', '-qb', 'feature');
+  git('add', 'auth.js');
+  git('commit', '-qm', 'log issued ids');
+  git('checkout', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'spec.md'), '# Plan\n\nRotate tokens.\n\nKeep the old ones a day.\n');
+  git('commit', '-qam', 'meanwhile on main');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'eee-home-'));
+  const { server } = await startHub({ port: 0, home, log: () => {} });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, route, body) =>
+    (await fetch(base + route, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) })).json();
+
+  try {
+    const { review } = await call('POST', '/api/agent/create', {
+      title: 'PR 7',
+      kind: 'code',
+      repo,
+      base: 'main',
+      head: 'feature',
+      files: ['auth.js', 'spec.md'],
+      overview: '# Log issued ids\n\nby Anna, feature -> main',
+      comments: [
+        { file: 'auth.js', line: 2, author: 'Anna', text: 'Is logging ids fine here?', ref: '42', replies: [{ author: 'Ben', text: 'Only in dev.' }] },
+        { file: 'spec.md', line: 3, author: 'Ben', text: 'How long?' },
+        { author: 'Carl', text: 'Looks good overall.' },
+        { file: 'deploy.yml', line: 9, author: 'Carl', text: 'Bump the version.' },
+      ],
+    });
+    const page = await (await fetch(`${base}/r/${review.id}`)).text();
+    const client = JSON.parse(page.match(/var REVIEW = (.*);\n/)[1]);
+    const docs = JSON.parse(page.match(/var DOCS = (.*);<\/script>/)[1]);
+    assert.deepEqual(
+      client.docs.map((d) => `${d.kind} ${d.path ?? d.title}`),
+      ['spec Übersicht', 'diff auth.js', 'file auth.js', 'spec spec.md'],
+      'the overview leads, and main moving on meanwhile is not part of the change',
+    );
+    assert.doesNotMatch(docs[3], /Keep the old ones/, 'a file without changes is shown as of head');
+    assert.match(docs[0], /Log issued ids[\s\S]*<h2>Kommentare<\/h2>[\s\S]*Looks good overall\.[\s\S]*Kommentare zu weiteren Dateien[\s\S]*deploy\.yml · Zeile 9[\s\S]*Bump the version/);
+    assert.match(docs[1], /log<\/span>\(id\);[\s\S]*<tr class="note">[\s\S]*Is logging ids fine here\?[\s\S]*Only in dev\./, 'below its line in the diff');
+    assert.match(docs[2], /Is logging ids fine here\?/, 'and in the whole file');
+    assert.match(docs[3], /Rotate tokens\.<\/p>\s*<div class="comment"[^>]*>[\s\S]*How long\?/, 'after its block in markdown');
+
+    const diff = client.docs[1];
+    const store = new Store(home);
+    const row = store.docs(review.id, 1)[1].rows.findIndex((r) => r.kind === 'comment');
+    await call('POST', `/api/r/${review.id}/submit`, { marks: [{ id: 'm1', doc: diff.id, ink: [[[5, 5], [60, 6]]], note: [], rows: [row] }] });
+    const feedback = await call('GET', `/api/agent/wait/${review.id}?timeout=5`);
+    assert.equal(feedback.marks[0].where, 'auth.js (Diff, Zeile 2)');
+    assert.equal(feedback.marks[0].text, '[Kommentar 42 von Anna zu auth.js:2] Is logging ids fine here?\n  Antwort von Ben: Only in dev.');
   } finally {
     server.close();
   }

@@ -79,6 +79,28 @@ function feedbackContent(result) {
   return content;
 }
 
+const comment = z.object({
+  file: z.string().optional().describe('Pfad relativ zum Repository; ohne: allgemeiner Kommentar auf der Übersicht'),
+  line: z.number().int().optional().describe('Zeile in der Datei; ohne: Kommentar zur ganzen Datei'),
+  side: z.enum(['new', 'old']).optional().describe('"old" für eine entfernte Zeile im Diff'),
+  author: z.string(),
+  text: z.string(),
+  at: z.string().optional().describe('Datum zum Anzeigen'),
+  ref: z.string().optional().describe('Deine Kennung, etwa die Kommentar-ID der Plattform; kommt mit Markierungen zurück'),
+  replies: z
+    .array(z.object({ author: z.string(), text: z.string(), at: z.string().optional() }))
+    .optional()
+    .describe('Der Thread darunter'),
+});
+const comments = z
+  .array(comment)
+  .optional()
+  .describe('Kommentare in den Dokumenten, etwa von Kollegen aus einem Pull Request oder deine eigenen Hinweise');
+const overview = z
+  .string()
+  .optional()
+  .describe('Markdown, das als eigenes Dokument vor den Dateien erscheint, etwa die Details eines Pull Requests');
+
 export async function startMcp() {
   const server = new McpServer({ name: 'eee-review', version: '0.1.0' });
 
@@ -87,13 +109,15 @@ export async function startMcp() {
     {
       title: 'Review auf dem Tablet starten',
       description:
-        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein), eine aufgeführte Datei ohne Änderung erscheint ganz. Danach review_wait aufrufen.',
+        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein), eine aufgeführte Datei ohne Änderung erscheint ganz. Mit base und head zeigt es, was head seit der Abzweigung von base geändert hat, wie ein Pull Request. overview und comments bringen PR-Details und Kommentare mit (siehe Skill eee-review, Abschnitt Pull requests). Danach review_wait aufrufen.',
       inputSchema: {
         title: z.string().describe('Kurzer Titel, erscheint in der Eingangsliste'),
         kind: z.enum(['spec', 'code']).default('spec'),
         files: z.array(z.string()).default([]).describe('Pfade relativ zum Repository'),
         base: z.string().default('HEAD').describe('nur code: Vergleichsbasis'),
         head: z.string().optional().describe('nur code: Ziel-Commit; weglassen für das Arbeitsverzeichnis'),
+        overview,
+        comments,
         repo: z
           .string()
           .optional()
@@ -102,7 +126,7 @@ export async function startMcp() {
           ),
       },
     },
-    async ({ title, kind, files, base, head, repo }) => {
+    async ({ title, kind, files, base, head, repo, overview, comments = [] }) => {
       await ensureHub();
       // Some clients start MCP servers outside the project (Kiro with a user-level config),
       // so an unset repo only falls back to the working directory when that is a git repo.
@@ -120,6 +144,8 @@ export async function startMcp() {
         files: relative,
         base,
         head,
+        overview,
+        comments: comments.map((c) => (c.file ? { ...c, file: path.relative(root, path.resolve(root, c.file)) } : c)),
       });
       return {
         content: [
@@ -170,11 +196,13 @@ export async function startMcp() {
           .array(z.object({ mark: z.number().int(), text: z.string() }))
           .describe('Pro Markierung: deine Lesart der Notiz und deine Antwort'),
         files: z.array(z.string()).optional().describe('ersetzt die Dokumentliste, falls sie sich ändern soll'),
+        overview,
+        comments: comments.describe('ersetzt die Kommentare, falls angegeben; sonst bleiben sie'),
       },
     },
-    async ({ id, replies, files }) => {
+    async ({ id, replies, files, overview, comments }) => {
       await ensureHub();
-      const { review } = await call('POST', `/api/agent/respond/${id}`, { replies, files });
+      const { review } = await call('POST', `/api/agent/respond/${id}`, { replies, files, overview, comments });
       return {
         content: [
           text(
