@@ -145,6 +145,7 @@ test('a code review of the files asked for goes to the tablet as pages and marku
     assert.equal(feedback.marks[0].text, '+  log(id);');
     assert.equal(feedback.marks[0].stamp, 'no');
     assert.equal(feedback.marks[1].where, 'auth.js (Diff, Zeile 2)', 'ink alone is located on the rendered page');
+    assert.ok(Buffer.from(feedback.marks[1].crop, 'base64').subarray(1, 4).equals(Buffer.from('PNG')), 'with the page around it');
     assert.ok(Buffer.from(feedback.marks[0].note, 'base64').subarray(1, 4).equals(Buffer.from('PNG')));
     await call('POST', `/api/r/${review.id}/submit`, submitted);
     const again = await call('GET', `/api/agent/wait/${review.id}?timeout=1`);

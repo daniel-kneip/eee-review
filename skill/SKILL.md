@@ -80,7 +80,9 @@ then call it again. Don't do other work in between unless the user asked you to.
 ## Reading the marks
 
 Each mark comes with where it sits (file, kind of view, source lines), the text under the ink,
-an optional stamp, and the handwritten note as an image.
+an optional stamp, and the handwritten note as an image. Marks made on the tablet also come
+with a cut of the page: the ink in black over the lightened page. Use it to see exactly what was
+circled or underlined, such as a single word or argument, where the lines alone are too coarse.
 
 - Stamp OK means agreed and Nein means rejected. The question-mark stamp means it is unclear or
   needs explaining.

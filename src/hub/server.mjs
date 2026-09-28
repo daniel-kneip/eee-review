@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { markCrop } from '../render/crop.mjs';
 import { escapeHtml } from '../render/highlight.mjs';
 import { PAGE_WIDTH, PageRenderer } from '../render/pages.mjs';
 import { rowsUnderInk } from './rows.mjs';
@@ -181,10 +182,26 @@ function renderPage(store, review, index) {
 
 function pendingForAgent(store, pending) {
   const { review, round, requests, feedback, again } = pending;
+  const docs = store.docs(review.id, round);
   const mark = (m, n) => {
     const { where, text } = store.describe(review.id, round, m);
     const note = store.notePng(review.id, round, m.id);
-    return { n, id: m.id, where, text, stamp: m.stamp ?? null, note: note ? note.toString('base64') : null };
+    const index = docs.findIndex((d) => d.id === m.doc);
+    let crop = null;
+    try {
+      if (index >= 0) crop = markCrop(store.roundDir(review.id, round, 'pages', String(index)), m.ink);
+    } catch {
+      // A cut is a help to the agent; the marks go without it.
+    }
+    return {
+      n,
+      id: m.id,
+      where,
+      text,
+      stamp: m.stamp ?? null,
+      note: note ? note.toString('base64') : null,
+      crop: crop ? crop.toString('base64') : null,
+    };
   };
   return {
     status: feedback ? 'feedback' : 'requests',

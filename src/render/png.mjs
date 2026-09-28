@@ -52,12 +52,14 @@ export function encodeGrayPng(pixels, width, height, bits = 8) {
   ]);
 }
 
-// Reads an 8-bit RGB or RGBA PNG, as Chromium writes screenshots, into gray values.
+// Reads an 8-bit RGB or RGBA PNG, as Chromium writes screenshots, or a gray one of 4 or 8
+// bits, as encodeGrayPng writes strips, into gray values.
 export function decodePngToGray(buf) {
   let off = 8;
   let width = 0;
   let height = 0;
   let channels = 0;
+  let bits = 8;
   const idat = [];
   while (off < buf.length) {
     const len = buf.readUInt32BE(off);
@@ -66,13 +68,15 @@ export function decodePngToGray(buf) {
     if (type === 'IHDR') {
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
-      if (data[8] !== 8 || data[12] !== 0) throw new Error('only 8-bit non-interlaced PNGs');
+      bits = data[8];
       channels = { 0: 1, 2: 3, 4: 2, 6: 4 }[data[9]];
+      if (data[12] !== 0 || !(bits === 8 || (bits === 4 && channels === 1))) throw new Error('unsupported PNG');
     } else if (type === 'IDAT') idat.push(data);
     off += 12 + len;
   }
   const raw = zlib.inflateSync(Buffer.concat(idat));
-  const stride = width * channels;
+  const stride = Math.ceil((width * channels * bits) / 8);
+  const step = Math.max(1, (channels * bits) / 8);
   const prev = new Uint8Array(stride);
   const line = new Uint8Array(stride);
   const gray = new Uint8Array(width * height);
@@ -81,9 +85,9 @@ export function decodePngToGray(buf) {
     const filter = raw[start];
     for (let i = 0; i < stride; i++) {
       const x = raw[start + 1 + i];
-      const a = i >= channels ? line[i - channels] : 0;
+      const a = i >= step ? line[i - step] : 0;
       const b = prev[i];
-      const c = i >= channels ? prev[i - channels] : 0;
+      const c = i >= step ? prev[i - step] : 0;
       let v = x;
       if (filter === 1) v = x + a;
       else if (filter === 2) v = x + b;
@@ -100,7 +104,11 @@ export function decodePngToGray(buf) {
     for (let x = 0; x < width; x++) {
       const p = x * channels;
       gray[y * width + x] =
-        channels < 3 ? line[p] : Math.round(0.299 * line[p] + 0.587 * line[p + 1] + 0.114 * line[p + 2]);
+        bits === 4
+          ? ((x & 1 ? line[x >> 1] : line[x >> 1] >> 4) & 15) * 17
+          : channels < 3
+            ? line[p]
+            : Math.round(0.299 * line[p] + 0.587 * line[p + 1] + 0.114 * line[p + 2]);
     }
     prev.set(line);
   }

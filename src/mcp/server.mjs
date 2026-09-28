@@ -56,6 +56,11 @@ function feedbackContent(result) {
     const stamp = m.stamp ? ` [${STAMPS[m.stamp] ?? m.stamp}]` : '';
     let t = `## ${heading}: ${m.where}${stamp}\n`;
     if (m.text) t += '\nMarkierter Inhalt:\n```\n' + m.text + '\n```\n';
+    if (m.crop) {
+      content.push(text(t + '\nSo sieht die Markierung auf der Seite aus (Tinte schwarz über aufgehellter Seite):'));
+      content.push({ type: 'image', data: m.crop, mimeType: 'image/png' });
+      t = '';
+    }
     t += m.note ? '\nHandschriftliche Notiz dazu:' : '\n(keine Notiz)';
     content.push(text(t));
     if (m.note) content.push({ type: 'image', data: m.note, mimeType: 'image/png' });
