@@ -1,101 +1,19 @@
-import { execFileSync, spawn } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { DEFAULT_PORT, hubToken, lanUrls } from '../hub/server.mjs';
+import * as agent from '../agent/client.mjs';
 
-const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cli.mjs');
-const hub = `http://127.0.0.1:${DEFAULT_PORT}`;
-const STAMPS = { ok: 'OK', no: 'Nein', ask: '? unklar' };
+// The MCP tools' names, for what the hub's answers tell the agent to do next.
+const to = {
+  fetch: (id) => `review_fetch (id "${id}")`,
+  respond: () => 'review_respond',
+  context: () => 'review_add_context',
+  close: () => 'review_close',
+};
 
-async function call(method, route, body) {
-  const res = await fetch(hub + route, {
-    method,
-    headers: { 'X-EEE-Token': hubToken(), ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const value = await res.json();
-  if (!res.ok) throw new Error(value.error ?? `hub answered ${res.status}`);
-  return value;
-}
-
-// Every agent session runs its own MCP server, but they share one hub, so reviews from all of
-// them meet in one inbox on the tablet. The first session to need the hub starts it detached.
-async function ensureHub() {
-  try {
-    await call('GET', '/api/agent/list');
-    return;
-  } catch {}
-  spawn(process.execPath, [cli, 'hub'], { detached: true, stdio: 'ignore' }).unref();
-  for (let i = 0; i < 50; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    try {
-      await call('GET', '/api/agent/list');
-      return;
-    } catch {}
-  }
-  throw new Error(`the review hub did not start on port ${DEFAULT_PORT}`);
-}
-
-function repoOf(dir) {
-  try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' }).trim();
-  } catch {
-    return null;
-  }
-}
-
-const text = (t) => ({ type: 'text', text: t });
-
-function feedbackContent(result) {
-  const { review } = result;
-  const content = [];
-  const describe = (m, heading) => {
-    const stamp = m.stamp ? ` [${STAMPS[m.stamp] ?? m.stamp}]` : '';
-    let t = `## ${heading}: ${m.where}${stamp}\n`;
-    if (m.text) t += '\nMarkierter Inhalt:\n```\n' + m.text + '\n```\n';
-    if (m.crop) {
-      content.push(text(t + '\nSo sieht die Markierung auf der Seite aus (Tinte schwarz über aufgehellter Seite):'));
-      content.push({ type: 'image', data: m.crop, mimeType: 'image/png' });
-      t = '';
-    }
-    t += m.note ? '\nHandschriftliche Notiz dazu:' : '\n(keine Notiz)';
-    content.push(text(t));
-    if (m.note) content.push({ type: 'image', data: m.note, mimeType: 'image/png' });
-  };
-  if (result.requests.length) {
-    content.push(
-      text(
-        `# Fragen während des Reviews von "${review.title}" (${review.id}), Runde ${review.round}\n\nDer Nutzer liest noch und bittet um Kontext. Lies die Notiz, liefere passende Dateien mit review_add_context nach und rufe danach wieder review_wait auf.`,
-      ),
-    );
-    result.requests.forEach((m, i) => describe(m, `Frage ${i + 1}`));
-  }
-  if (result.status === 'feedback') {
-    const again = result.again ? '\n\nDiese Runde wurde schon einmal geliefert, aber noch nicht beantwortet. Falls du sie schon kennst, antworte einfach.' : '';
-    const next = result.marks.length
-      ? 'Lies jede handschriftliche Notiz und schreibe als Erstes auf, wie du sie gelesen hast; der Nutzer sieht deine Lesart in der nächsten Runde. Antworte dann mit review_respond, eine Antwort pro Markierung (mark = Nummer).'
-      : 'Der Nutzer hat nichts markiert. Frag im Chat nach, ob das Review damit erledigt ist, und rufe dann review_close auf, statt eine leere Runde zu starten.';
-    content.push(text(`# Review "${review.title}" (${review.id}), Runde ${review.round}: ${result.marks.length} Markierungen\n\n${next}${again}`));
-    result.marks.forEach((m) => describe(m, `Markierung ${m.n}`));
-    if (result.drafts?.length) {
-      const VERDICT = {
-        ok: 'freigegeben (OK): so posten',
-        no: 'verworfen (Nein): nicht posten',
-        change: 'Änderung gewünscht: Notiz lesen, überarbeiten und in der nächsten Runde erneut vorlegen',
-        unclear: 'markiert, aber ohne OK, Nein oder Notiz: nachfragen, nicht posten',
-        none: 'nicht markiert: nicht posten',
-      };
-      const lines = result.drafts.map(
-        (d) => `- Entwurf ${d.n}${d.ref ? ` (Antwort auf ${d.ref})` : ''}: ${VERDICT[d.verdict]}${d.marks.length ? ` (Markierung ${d.marks.join(', ')})` : ''}`,
-      );
-      content.push(text(`# Kommentar-Entwürfe\n\n${lines.join('\n')}\n\nPoste nur die freigegebenen, mit genau ihrem Text.`));
-    }
-  }
-  return content;
-}
+const content = (parts) => ({
+  content: parts.map((p) => (p.type === 'image' ? { type: 'image', data: p.data, mimeType: 'image/png' } : p)),
+});
 
 const comment = z.object({
   file: z.string().optional().describe('Pfad relativ zum Repository; ohne: allgemeiner Kommentar auf der Übersicht'),
@@ -127,7 +45,7 @@ export async function startMcp() {
     {
       title: 'Review auf dem Tablet starten',
       description:
-        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein), eine aufgeführte Datei ohne Änderung erscheint ganz. Mit base und head zeigt es, was head seit der Abzweigung von base geändert hat, wie ein Pull Request. overview und comments bringen PR-Details und Kommentare mit (siehe Skill eee-review, Abschnitt Pull requests). Danach review_wait aufrufen.',
+        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein), eine aufgeführte Datei ohne Änderung erscheint ganz. Mit base und head zeigt es, was head seit der Abzweigung von base geändert hat, wie ein Pull Request. overview und comments bringen PR-Details und Kommentare mit (siehe Skill eee-review, Abschnitt Pull requests). Danach dem Nutzer Bescheid geben und auf seine Nachricht warten, dann review_fetch.',
       inputSchema: {
         title: z.string().describe('Kurzer Titel, erscheint in der Eingangsliste'),
         kind: z.enum(['spec', 'code']).default('spec'),
@@ -144,35 +62,18 @@ export async function startMcp() {
           ),
       },
     },
-    async ({ title, kind, files, base, head, repo, overview, comments = [] }) => {
-      await ensureHub();
-      // Some clients start MCP servers outside the project (Kiro with a user-level config),
-      // so an unset repo only falls back to the working directory when that is a git repo.
-      const root = repo ? (repoOf(path.resolve(repo)) ?? path.resolve(repo)) : repoOf(process.cwd());
-      if (!root) {
-        throw new Error(
-          `Kein Repository gefunden (Arbeitsverzeichnis ${process.cwd()}). Gib repo als absoluten Pfad des Projekts an.`,
-        );
-      }
-      const relative = files.map((f) => path.relative(root, path.resolve(root, f)));
-      const { review } = await call('POST', '/api/agent/create', {
-        title,
-        kind,
-        repo: root,
-        files: relative,
-        base,
-        head,
-        overview,
-        comments: comments.map((c) => (c.file ? { ...c, file: path.relative(root, path.resolve(root, c.file)) } : c)),
-      });
-      return {
-        content: [
-          text(
-            `Review ${review.id} ("${review.title}") liegt auf dem Tablet bereit (${lanUrls(DEFAULT_PORT)[0] ?? `Port ${DEFAULT_PORT}`}). Rufe jetzt review_wait mit id "${review.id}" auf und rufe es erneut auf, solange es "wartet noch" meldet.`,
-          ),
-        ],
-      };
+    async (args) => content(await agent.create(to, args)),
+  );
+
+  server.registerTool(
+    'review_fetch',
+    {
+      title: 'Runde vom Tablet abholen',
+      description:
+        'Holt ab, was der Nutzer auf dem Tablet abgeschickt hat: Markierungen mit markiertem Inhalt, Seitenausschnitt und handschriftlicher Notiz als Bilder, oder seine Fragen während des Lesens. Wartet nicht; aufrufen, wenn der Nutzer sagt, dass es einen neuen Stand gibt.',
+      inputSchema: { id: z.string() },
     },
+    async ({ id }) => content(await agent.fetchRound(to, id)),
   );
 
   server.registerTool(
@@ -180,26 +81,13 @@ export async function startMcp() {
     {
       title: 'Auf das Tablet warten',
       description:
-        'Wartet, bis der Nutzer das Review auf dem Tablet abschickt oder unterwegs um Kontext bittet, und liefert Markierungen mit dem markierten Inhalt und handschriftlichen Notizen als Bilder. Kehrt nach timeout_seconds mit "wartet noch" zurück; dann erneut aufrufen.',
+        'Wie review_fetch, wartet aber bis zu timeout_seconds auf die Runde. Nur nutzen, wenn der Nutzer ausdrücklich möchte, dass du wartest.',
       inputSchema: {
         id: z.string(),
         timeout_seconds: z.number().int().min(10).max(1800).default(240),
       },
     },
-    async ({ id, timeout_seconds }) => {
-      await ensureHub();
-      const result = await call('GET', `/api/agent/wait/${id}?timeout=${timeout_seconds}`);
-      if (result.status === 'waiting') {
-        return {
-          content: [
-            text(
-              `Review ${id} wartet noch auf den Nutzer (Status: ${result.review.status}). Rufe review_wait erneut auf.`,
-            ),
-          ],
-        };
-      }
-      return { content: feedbackContent(result) };
-    },
+    async ({ id, timeout_seconds }) => content(await agent.fetchRound(to, id, timeout_seconds)),
   );
 
   server.registerTool(
@@ -207,7 +95,7 @@ export async function startMcp() {
     {
       title: 'Nächste Runde starten',
       description:
-        'Beantwortet die Markierungen der abgeschickten Runde und startet die nächste: Die Antworten erscheinen auf dem Tablet als eigenes Dokument neben den Notizen des Nutzers, die Dateien werden neu gerendert (für überarbeitete Fassungen erst die Dateien ändern, dann antworten). Danach wieder review_wait aufrufen.',
+        'Beantwortet die Markierungen der abgeschickten Runde und startet die nächste: Die Antworten erscheinen auf dem Tablet als eigenes Dokument neben den Notizen des Nutzers, die Dateien werden neu gerendert (für überarbeitete Fassungen erst die Dateien ändern, dann antworten). Danach dem Nutzer Bescheid geben und auf seine Nachricht warten, dann review_fetch.',
       inputSchema: {
         id: z.string(),
         replies: z
@@ -229,17 +117,7 @@ export async function startMcp() {
           .describe('PR-Kommentare zur Freigabe: erscheinen als eigenes Dokument, der Nutzer stempelt jeden mit OK oder Nein'),
       },
     },
-    async ({ id, replies, files, overview, comments, drafts }) => {
-      await ensureHub();
-      const { review } = await call('POST', `/api/agent/respond/${id}`, { replies, files, overview, comments, drafts });
-      return {
-        content: [
-          text(
-            `Runde ${review.round} von "${review.title}" liegt auf dem Tablet. Rufe review_wait mit id "${id}" auf.`,
-          ),
-        ],
-      };
-    },
+    async ({ id, ...body }) => content(await agent.respond(to, id, body)),
   );
 
   server.registerTool(
@@ -250,11 +128,7 @@ export async function startMcp() {
         'Hängt Dateien an die laufende Runde an; sie erscheinen auf dem Tablet in der Dateiliste als "nachgeliefert".',
       inputSchema: { id: z.string(), files: z.array(z.string()).describe('Pfade relativ zum Repository des Reviews') },
     },
-    async ({ id, files }) => {
-      await ensureHub();
-      const { docs } = await call('POST', `/api/agent/context/${id}`, { files });
-      return { content: [text(`Nachgeliefert. Das Review hat jetzt ${docs} Dokumente. Rufe review_wait erneut auf.`)] };
-    },
+    async ({ id, files }) => content(await agent.addContext(to, id, files)),
   );
 
   server.registerTool(
@@ -264,22 +138,13 @@ export async function startMcp() {
       description: 'Nimmt das Review aus der Eingangsliste des Tablets, wenn alles geklärt ist.',
       inputSchema: { id: z.string() },
     },
-    async ({ id }) => {
-      await ensureHub();
-      await call('POST', `/api/agent/close/${id}`, {});
-      return { content: [text(`Review ${id} ist abgeschlossen.`)] };
-    },
+    async ({ id }) => content(await agent.close(id)),
   );
 
   server.registerTool(
     'review_list',
     { title: 'Reviews auflisten', description: 'Listet alle Reviews mit Status und Runde.', inputSchema: {} },
-    async () => {
-      await ensureHub();
-      const reviews = await call('GET', '/api/agent/list');
-      const lines = reviews.map((r) => `${r.id}  ${r.status.padEnd(11)}  Runde ${r.round}  ${r.kind}  ${r.title}`);
-      return { content: [text(lines.join('\n') || 'Keine Reviews.')] };
-    },
+    async () => content(await agent.list()),
   );
 
   await server.connect(new StdioServerTransport());

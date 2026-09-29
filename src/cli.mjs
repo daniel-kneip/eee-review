@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_PORT, hubToken, lanUrls, startHub } from './hub/server.mjs';
@@ -12,6 +13,15 @@ const USB_TELNET = 2323;
 const USAGE = `eee-review hub               start the review hub (tablet pages and agent API) on port ${DEFAULT_PORT},
                              and the USB link to the tablet when native/eeelink/eeelink-host is built
 eee-review mcp               MCP server over stdio for a coding agent; starts the hub if needed
+eee-review agent <command>   the same for agents without MCP; starts the hub if needed:
+  create [json]              send a review; json (or stdin): {title, kind, files, base, head, repo,
+                             overview, comments}
+  fetch <id>                 what the user sent; notes and page cuts are written as PNG files
+  respond <id> [json]        answer the round; json (or stdin): {replies, files, overview, comments,
+                             drafts}
+  context <id> <file...>     add files to the round
+  close <id>                 take the review off the tablet
+  list                       all reviews
 eee-review deploy [host]     install and start the app on the tablet over telnet: through the USB
                              link when it is up, else over Wi-Fi to host ($EEE_TABLET)
 Environment: EEE_REVIEW_HOME, EEE_REVIEW_PORT, EEE_REVIEW_BIND (127.0.0.1 for cable only)`;
@@ -27,6 +37,8 @@ if (command === 'hub') {
 } else if (command === 'mcp') {
   const { startMcp } = await import('./mcp/server.mjs');
   await startMcp();
+} else if (command === 'agent') {
+  await agentCommand(args);
 } else if (command === 'deploy') {
   await deploy(args[0] ?? process.env.EEE_TABLET);
 } else {
@@ -168,4 +180,43 @@ function telnet(host, port = 23) {
       }),
     );
   });
+}
+
+// The agent CLI prints what the MCP tools return. Images go to files, which the agent opens
+// with its own tools; their paths are printed where the images stand.
+async function agentCommand([sub, ...rest]) {
+  const agent = await import('./agent/client.mjs');
+  const to = {
+    fetch: (id) => `eee-review agent fetch ${id}`,
+    respond: (id) => `eee-review agent respond ${id} (JSON mit replies auf stdin)`,
+    context: (id) => `eee-review agent context ${id} <dateien>`,
+    close: (id) => `eee-review agent close ${id}`,
+  };
+  const input = async (arg) => {
+    if (arg) return JSON.parse(arg);
+    let data = '';
+    for await (const chunk of process.stdin) data += chunk;
+    return data.trim() ? JSON.parse(data) : {};
+  };
+  let parts;
+  if (sub === 'create') parts = await agent.create(to, await input(rest[0]));
+  else if (sub === 'fetch') parts = await agent.fetchRound(to, rest[0]);
+  else if (sub === 'respond') parts = await agent.respond(to, rest[0], await input(rest[1]));
+  else if (sub === 'context') parts = await agent.addContext(to, rest[0], rest.slice(1));
+  else if (sub === 'close') parts = await agent.close(rest[0]);
+  else if (sub === 'list') parts = await agent.list();
+  else {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  const dir = path.join(process.env.EEE_REVIEW_HOME ?? path.join(os.homedir(), '.eee-review'), 'agent', rest[0] ?? '', String(Date.now()));
+  for (const part of parts) {
+    if (part.type === 'text') console.log(part.text);
+    else {
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, part.name);
+      fs.writeFileSync(file, Buffer.from(part.data, 'base64'));
+      console.log(`[Bild: ${file}]`);
+    }
+  }
 }

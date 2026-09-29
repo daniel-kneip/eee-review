@@ -6,8 +6,34 @@ description: Send a plan, spec or code change to the user's Eee Note tablet for 
 # Reviewing on the Eee Note
 
 The user reads on an old grayscale pen tablet. They circle or underline what they mean and
-write notes by hand beside it. The eee-review MCP tools carry documents to the tablet and bring
-the marks back.
+write notes by hand beside it. eee-review carries documents to the tablet and brings the marks
+back.
+
+## Tools
+
+Use the eee-review MCP tools when you have them. Otherwise use the CLI, which does the same:
+
+| MCP tool | CLI |
+|---|---|
+| `review_create` | `eee-review agent create` with the arguments as JSON on stdin |
+| `review_fetch` | `eee-review agent fetch <id>` |
+| `review_respond` | `eee-review agent respond <id>` with `{replies, ...}` as JSON on stdin |
+| `review_add_context` | `eee-review agent context <id> <file...>` |
+| `review_close` | `eee-review agent close <id>` |
+| `review_list` | `eee-review agent list` |
+
+For example:
+
+```sh
+eee-review agent create <<'JSON'
+{"title": "Login refactor", "kind": "code", "repo": "/abs/path/to/project", "base": "HEAD"}
+JSON
+```
+
+The CLI prints what the MCP tools return. It writes images, the handwritten notes and page cuts,
+to PNG files and prints `[Bild: <path>]` where each one belongs. Open every one of them with
+your file reading tool before you answer. If `eee-review` is not on the PATH, run
+`node <eee-review checkout>/src/cli.mjs agent ...`.
 
 ## Starting
 
@@ -19,8 +45,8 @@ the marks back.
   folders, pass them as `files`: the review then shows only their changes, and a named file
   without changes is shown whole.
 - Give it a short title. It is what the user sees in the tablet's inbox.
-- Pass `repo` as the project's absolute path unless you know the MCP server runs inside the
-  project. Kiro starts it elsewhere; without `repo` the call then fails and asks for it.
+- Pass `repo` as the project's absolute path unless you know the tool runs inside the project.
+  Kiro starts it elsewhere; without `repo` the call then fails and asks for it.
 
 ## Comments
 
@@ -70,7 +96,7 @@ When the user asks you to bring a pull request (Bitbucket, GitHub, ...) to the t
      `ref`.
    - The drafts appear on the tablet as a document of their own, one box each. The user stamps
      each one: OK to post it, Nein to drop it, or a note to change it.
-   - `review_wait` then lists every draft with its verdict. Post exactly the approved ones, with
+   - `review_fetch` then lists every draft with its verdict. Post exactly the approved ones, with
      their text. Revise the ones with a note and show them again in the next round. Never post
      one that was not approved.
    - If the review is already closed, show the drafts in the chat and wait for approval there.
@@ -78,10 +104,12 @@ When the user asks you to bring a pull request (Bitbucket, GitHub, ...) to the t
    - Keep each draft close to the user's note: their wording, their length, nothing added.
      Details from the thread or the code that the note does not say stay out of the draft.
 
+## Getting the round
 
-Call `review_wait` right after creating the review. It returns when the user sends the round,
-or earlier when they ask for context mid-review. It returns "wartet noch" after its timeout;
-then call it again. Don't do other work in between unless the user asked you to.
+Don't wait or poll after creating or answering a review. Tell the user it is on the tablet and
+stop. They tell you when they have sent the round, or when they asked a question mid-review.
+Then call `review_fetch` once. If it says there is nothing new yet, tell the user and wait for
+their next message. Use `review_wait`, which blocks, only if the user asks you to wait.
 
 ## Reading the marks
 
@@ -99,10 +127,10 @@ circled or underlined, such as a single word or argument, where the lines alone 
 
 ## Context requests
 
-When `review_wait` returns "Fragen", the user is still reading and asked for more. Their note
+When `review_fetch` returns "Fragen", the user is still reading and asked for more. Their note
 says what they need, for example "wo wird das aufgerufen?" or "zeig mir den SessionService".
-Find the files and call `review_add_context`, then call `review_wait` again. Don't answer in
-prose; they are reading on the tablet, not in the terminal.
+Find the files and call `review_add_context`. Don't answer in prose; they are reading on the
+tablet, not in the terminal.
 
 ## Answering
 
@@ -110,7 +138,7 @@ prose; they are reading on the tablet, not in the terminal.
 2. Call `review_respond` with one reply per mark. `mark` is the mark's number. Each reply holds
    your reading of the note and what you did or why not.
 3. This starts the next round. The files are rendered again and your replies come first.
-4. Call `review_wait` again.
+4. Tell the user, and fetch again when they say they have sent it.
 
 Repeat until the user sends a round with nothing left to discuss, or tells you it's done. Then
 call `review_close`.

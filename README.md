@@ -13,9 +13,13 @@ Agent ──MCP──▶ eee-review mcp ──HTTP──▶ Hub (Laptop, Port 87
   des Tablets und legt sie als 4-Bit-Graustufenstreifen ab, samt der Position jeder Zeile.
   Markierungen ordnet er anhand dieser Positionen den Quellzeilen zu. Die Agenten-API ist nur
   über localhost erreichbar.
-- **MCP-Server** (`src/mcp`): Stellt dem Agenten die Tools `review_create`, `review_wait`,
-  `review_respond`, `review_add_context`, `review_close` und `review_list` bereit. Ist der Hub
-  noch nicht gestartet, startet der MCP-Server ihn im Hintergrund.
+- **MCP-Server** (`src/mcp`): Stellt dem Agenten die Tools `review_create`, `review_fetch`,
+  `review_respond`, `review_add_context`, `review_close` und `review_list` bereit, dazu
+  `review_wait` zum blockierenden Warten. Ist der Hub noch nicht gestartet, startet der
+  MCP-Server ihn im Hintergrund.
+- **Agent-CLI** (`eee-review agent …`, `src/agent`): Dasselbe für Agenten ohne MCP, etwa Kiro.
+  JSON geht über stdin hinein, Notizen und Seitenausschnitte kommen als PNG-Dateien heraus.
+  `npm link` legt `eee-review` in den PATH.
 - **eeereview** (`native/`): Qt-Embedded-4.6-App für das Tablet, ohne WebKit. Sie zeigt die
   Streifen des Hubs, sodass Blättern und Scrollen nur Pixel kopiert, und liest den Stift
   direkt von `/dev/input/event2`, mit rund 130 Punkten pro Sekunde. Leiste unten mit Dateien,
@@ -108,12 +112,14 @@ eine doppelte Frage ändert nichts.
 ## Ablauf
 
 1. „Schick mir das Spec zum Review" oder „Lass mich den Code reviewen". Der Agent ruft
-   `review_create` und dann `review_wait` auf.
+   `review_create` auf und sagt dir Bescheid.
 2. Das Review erscheint in der Eingangsliste auf dem Tablet. Antippen, lesen, markieren.
 3. Über „Dateien" wählst du Dokument, Diff oder ganze Datei; von einem Diff aus springst du
    mit „Ganze Datei an dieser Stelle" direkt zur ganzen Datei. Mit „An den Agenten senden"
    schickst du die Runde ab.
-4. Der Agent liest die Markierungen, ändert die Dateien und antwortet. Die nächste Runde
+4. Du sagst dem Agenten, dass die Runde unterwegs ist. Er holt sie mit `review_fetch` ab,
+   statt die ganze Zeit zu warten.
+5. Der Agent liest die Markierungen, ändert die Dateien und antwortet. Die nächste Runde
    beginnt mit einer Seite „Antworten": deine Notiz, seine Lesart und seine Antwort.
 
 ## Entwickeln
