@@ -1217,7 +1217,7 @@ private:
         toolBeforeFigure = tool;
         setTool("hand");
     }
-    // A document that is a single diagram opens in the zoom view straight away.
+    // A document that is a single diagram is shown in the zoom view only.
     void openLoneFigure() {
         Doc *d = doc();
         if (d && d->loaded && d->figureBoxes.size() == 1 && QRegExp(".*\\.(drawio|dio)", Qt::CaseInsensitive).exactMatch(d->path))

@@ -60,17 +60,20 @@ test('markdown blocks and code lines each become a row that points back to its s
   for (let i = 0; i < rows.length; i++) assert.ok(html.includes(`data-row="${i}"`), `row ${i} is in the html`);
 });
 
-test('a draw.io file becomes a figure per page, its labels the text a mark on it reports', () => {
+test('a draw.io file becomes a document per page, its labels the text a mark on it reports', () => {
   const plain =
     '<mxGraphModel><root><object placeholders="1" c4Name="Portal" c4Type="Container" label="&lt;b&gt;%c4Name%&lt;/b&gt;&lt;div&gt;[%c4Type%]&lt;/div&gt;"><mxCell vertex="1"/></object>' +
     '<mxCell value="&lt;b&gt;MAM API&lt;/b&gt;&lt;div&gt;API Gateway&lt;/div&gt;" vertex="1"/></root></mxGraphModel>';
   const packed = zlib.deflateRawSync(Buffer.from(encodeURIComponent('<mxGraphModel><root><mxCell value="Queue" vertex="1"/></root></mxGraphModel>'))).toString('base64');
-  const { html, rows } = renderDrawio('docs/arch.drawio', `<mxfile><diagram name="Container">${plain}</diagram><diagram name="Old">${packed}</diagram></mxfile>`);
+  const docs = renderDrawio('docs/arch.drawio', `<mxfile><diagram name="Container">${plain}</diagram><diagram name="Old">${packed}</diagram></mxfile>`);
   assert.deepEqual(
-    rows.map((r) => r.text),
-    ['draw.io, Container: Portal [Container] · MAM API API Gateway', 'draw.io, Old: Queue'],
+    docs.map((d) => [d.title, d.rows[0].text]),
+    [
+      ['arch.drawio – Container', 'draw.io, Container: Portal [Container] · MAM API API Gateway'],
+      ['arch.drawio – Old', 'draw.io, Old: Queue'],
+    ],
   );
-  assert.equal((html.match(/data-drawio="\d"/g) ?? []).length, 2);
+  assert.deepEqual(docs.map((d) => d.html.match(/data-drawio="(\d)"/)[1]), ['0', '1']);
 });
 
 test('strokes rasterise to a grayscale png with ink where the pen went', () => {

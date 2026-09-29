@@ -2,29 +2,24 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { escapeHtml } from './highlight.mjs';
 
-// A draw.io file becomes a document with one figure per diagram page. renderFigures turns
-// each into an image; the labels on the page become the figure's row text, so a mark on a
-// diagram tells the agent what is drawn there.
+// A draw.io file becomes a document per diagram page, each a single figure the tablet shows
+// in its zoom view. renderFigures turns it into an image; the labels on the page become the
+// figure's row text, so a mark on a diagram tells the agent what is drawn there.
 export function renderDrawio(file, xml) {
-  const rows = [];
   const pages = diagramPages(xml);
-  const body = pages
-    .map((page, i) => {
-      const index = rows.push({ kind: 'figure', lines: null, text: `draw.io, ${page.name}: ${page.labels.join(' · ')}` }) - 1;
-      const heading = pages.length > 1 ? `<h2>${escapeHtml(page.name)}</h2>` : '';
-      return `${heading}<div class="figure" data-row="${index}" data-drawio="${i}"><pre class="code">${escapeHtml(
+  return pages.map((page, i) => {
+    const title = pages.length > 1 ? `${path.basename(file)} – ${page.name}` : path.basename(file);
+    return {
+      kind: 'spec',
+      path: file,
+      title,
+      drawio: xml,
+      html: `<div class="doc spec"><h1>${escapeHtml(title)}</h1><div class="figure" data-row="0" data-drawio="${i}"><pre class="code">${escapeHtml(
         page.labels.join('\n') || page.name,
-      )}</pre></div>`;
-    })
-    .join('');
-  return {
-    kind: 'spec',
-    path: file,
-    title: path.basename(file),
-    drawio: xml,
-    html: `<div class="doc spec"><h1>${escapeHtml(path.basename(file))}</h1>${body || '<p>Keine Diagramme.</p>'}</div>`,
-    rows,
-  };
+      )}</pre></div></div>`,
+      rows: [{ kind: 'figure', lines: null, text: `draw.io, ${page.name}: ${page.labels.join(' · ')}` }],
+    };
+  });
 }
 
 export const isDrawio = (file) => /\.(drawio|dio)$/i.test(file);

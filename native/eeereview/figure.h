@@ -2,7 +2,8 @@
 // figures at twice their size on the page, and this view shows them at up to that size. It
 // covers the document's pane, so the note pane stays below it. The review's tool applies: the
 // hand pans, pen and eraser mark the figure, and the marks are the page's, mapped onto it. Its
-// own bar and the left and right buttons zoom; back closes it.
+// own bar and the left and right buttons zoom; back closes it, unless it is the document's
+// only view, as for a draw.io page.
 
 #ifndef EEE_FIGURE_H
 #define EEE_FIGURE_H
@@ -30,9 +31,9 @@ class FigureView : public QWidget {
     Q_OBJECT
 public:
     // box: where the figure sits on its page. at: where it was tapped, from 0 to 1 across it.
-    // fit: show all of it first, rather than its detail at the page's size.
-    FigureView(Mirror *mirror, FigureHost *host, const QString &key, const QRect &box, const QPointF &at, bool fit, QWidget *parent)
-        : QWidget(parent), mirror(mirror), host(host), key(key), box(box), at(at), fit(fit), level(-1), pressed(false) {
+    // lone: the figure is all of its document, so the view stays and shows it all at first.
+    FigureView(Mirror *mirror, FigureHost *host, const QString &key, const QRect &box, const QPointF &at, bool lone, QWidget *parent)
+        : QWidget(parent), mirror(mirror), host(host), key(key), box(box), at(at), lone(lone), level(-1), pressed(false) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         connect(mirror, SIGNAL(got(QString, QByteArray, bool)), this, SLOT(got(QString, QByteArray, bool)));
         mirror->get(key);
@@ -67,7 +68,7 @@ public:
         pressed = false;
         QPoint first = live.first();
         if (gesture == "bar") {
-            if (closeRect().contains(first)) emit closed();
+            if (!lone && closeRect().contains(first)) emit closed();
             else if (zoomOutRect().contains(first)) zoom(-1);
             else if (zoomInRect().contains(first)) zoom(1);
             else if (fitRect().contains(first)) setLevel(0, center());
@@ -88,7 +89,7 @@ public:
     }
     // The tablet's buttons, named as in main.cpp.
     bool button(const QString &name) {
-        if (name == "back") emit closed();
+        if (name == "back" && !lone) emit closed();
         else if (name == "left") zoom(-1);
         else if (name == "right") zoom(1);
         else return false;
@@ -129,7 +130,7 @@ protected:
         QRect bar = toolBar();
         p.fillRect(bar, Qt::white);
         p.fillRect(bar.left(), bar.bottom() - 1, bar.width(), 2, Qt::black);
-        paintButton(p, closeRect(), QString::fromUtf8("Zur\xc3\xbc" "ck"), false, 18);
+        if (!lone) paintButton(p, closeRect(), QString::fromUtf8("Zur\xc3\xbc" "ck"), false, 18);
         paintButton(p, zoomOutRect(), QString::fromUtf8("\xe2\x88\x92"), false, 24);
         paintButton(p, zoomInRect(), "+", false, 24);
         paintButton(p, fitRect(), "Ganz", false, 18);
@@ -162,7 +163,7 @@ private slots:
         double steps[] = { 0.5, 0.75, 1.0 };
         for (int i = 0; i < 3; ++i)
             if (steps[i] > scales.last() + 0.05) scales << steps[i];
-        setLevel(fit || scales.size() < 2 ? 0 : scales.size() - 2, QPointF(at.x() * source.width(), at.y() * source.height()));
+        setLevel(lone || scales.size() < 2 ? 0 : scales.size() - 2, QPointF(at.x() * source.width(), at.y() * source.height()));
     }
 
 private:
@@ -170,10 +171,11 @@ private:
     QRect toolBar() const { return QRect(0, 0, width(), BAR_H); }
     QRect viewRect() const { return QRect(0, BAR_H, width(), height() - BAR_H); }
     QRect barButton(int x, int w) const { return QRect(x, 5, w, BAR_H - 12); }
+    int barStart() const { return lone ? 6 : 106; }
     QRect closeRect() const { return barButton(6, 92); }
-    QRect zoomOutRect() const { return barButton(106, 48); }
-    QRect zoomInRect() const { return barButton(160, 48); }
-    QRect fitRect() const { return barButton(214, 70); }
+    QRect zoomOutRect() const { return barButton(barStart(), 48); }
+    QRect zoomInRect() const { return barButton(barStart() + 54, 48); }
+    QRect fitRect() const { return barButton(barStart() + 108, 70); }
 
     // Figure image pixels per page pixel, times the zoom: how much larger the page looks here.
     double pageScale() const { return level < 0 ? 1 : scales[level] * source.width() / qMax(1, box.width()); }
@@ -231,7 +233,7 @@ private:
     QString key, message, gesture;
     QRect box, dirty;
     QPointF at;
-    bool fit;
+    bool lone;
     QImage source;
     QPixmap shown;
     QList<double> scales;
