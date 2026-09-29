@@ -189,7 +189,7 @@ function pendingForAgent(store, pending) {
     const index = docs.findIndex((d) => d.id === m.doc);
     let crop = null;
     try {
-      if (index >= 0) crop = markCrop(store.roundDir(review.id, round, 'pages', String(index)), m.ink);
+      if (index >= 0) crop = markCrop(store.roundDir(review.id, round, 'pages', String(index)), m.ink, store.dir(review.id, 'figures'));
     } catch {
       // A cut is a help to the agent; the marks go without it.
     }

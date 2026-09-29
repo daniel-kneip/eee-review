@@ -25,6 +25,7 @@ static const int NOTE_TILE = 256;
 // Decoded strips and baked tiles are kept this many strips around the view. Kept for every
 // strip visited they filled 70 MB of the tablet's 256 in a review of 14 files.
 static const int KEEP_STRIPS = 2;
+static const int END_SPACE = 40;
 static const int TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800, NEAR = 120, CONFIRM_MS = 5000, STATE_DELAY = 1500;
 
 struct Mark {
@@ -165,11 +166,11 @@ inline bool strokeHit(const QPolygon &pts, const QPoint &p) {
     return false;
 }
 
-class ReviewWidget : public QWidget {
+class ReviewWidget : public QWidget, public FigureHost {
     Q_OBJECT
 public:
     ReviewWidget(Mirror *mirror, const QString &id)
-        : mirror(mirror), figure(0), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
+        : mirror(mirror), figure(0), penOnFigure(false), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
           loggedRss(0), drawerOpen(false), drawerScroll(0), drawerHeight(0), jumpDoc(-1), jumpLine(0) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
@@ -203,7 +204,8 @@ signals:
 public slots:
     // Screen coordinates, from the app's PenReader.
     void penDown(const QPoint &screen) {
-        if (figure) {
+        penOnFigure = figure && figure->geometry().contains(mapFromGlobal(screen));
+        if (penOnFigure) {
             figure->penDown(screen);
             return;
         }
@@ -227,7 +229,7 @@ public slots:
         }
     }
     void penMoved(const QPoint &screen) {
-        if (figure) {
+        if (penOnFigure) {
             figure->penMoved(screen);
             return;
         }
@@ -244,12 +246,17 @@ public slots:
         else if (gesture == "doc" || gesture == "note") dirty |= QRect(last, p).normalized().adjusted(-4, -4, 4, 4);
     }
     void penBurst() {
+        if (penOnFigure) {
+            figure->penBurst();
+            return;
+        }
         if (dirty.isEmpty()) return;
         repaint(dirty);
         dirty = QRect();
     }
     void penUp() {
-        if (figure) {
+        if (penOnFigure) {
+            penOnFigure = false;
             figure->penUp();
             return;
         }
@@ -433,6 +440,7 @@ private:
     QRect toolBarRect() const { return QRect(0, height() - TOOLBAR_H, width(), TOOLBAR_H); }
 
     void layoutChanged() {
+        if (figure) figure->setGeometry(docRect());
         if (doc()) stateTimer.start(STATE_DELAY);
         if (!noteH) noteH = qRound(body() * 0.42);
         noteH = qBound(MIN_PANE, noteH, body() - NOTEBAR_H - MIN_PANE);
@@ -813,6 +821,7 @@ private:
         }
         update(docRect());
         update(railRect());
+        if (figure) figure->update();
     }
     void invalidateNotes(const MarkPtr &mark = MarkPtr(), const QRect &area = QRect()) {
         for (QMap<QString, Tile>::iterator it = tiles.begin(); it != tiles.end(); ++it) {
@@ -1015,9 +1024,11 @@ private slots:
 
 private:
     // ── Scrolling ───────────────────────────────────────────────────────
+    // A page ends right under its last line; without some room below it, the toolbar's edge
+    // cut into that line.
     int maxScroll() {
         Doc *d = doc();
-        return d ? qMax(0, d->height - docH()) : 0;
+        return d ? qMax(0, d->height + END_SPACE - docH()) : 0;
     }
     void clampScroll() {
         Doc *d = doc();
@@ -1136,7 +1147,13 @@ private:
             else if (!hit) openFigureAt(stroke[0]);
             return;
         }
-        // A stroke well away from the open mark means something else.
+        addInk(stroke);
+    }
+
+    // A stroke on the current document, in its coordinates: it adds to the open mark when
+    // near it, and starts a mark of its own otherwise. A stroke well away from the open mark
+    // means something else.
+    void addInk(const QPolygon &stroke) {
         if (openMark && openMark->doc == doc()->id &&
             boundsOf(openMark->ink).adjusted(-NEAR, -NEAR, NEAR, NEAR).intersects(stroke.boundingRect())) {
             QRect before = markArea(openMark);
@@ -1169,13 +1186,37 @@ private:
             QRect box = d->figureBoxes[i];
             if (!box.contains(p)) continue;
             QPointF at(double(p.x() - box.left()) / box.width(), double(p.y() - box.top()) / box.height());
-            figure = new FigureView(mirror, reviewId + "/fig/" + d->figureNames[i], at, this);
+            figure = new FigureView(mirror, this, reviewId + "/fig/" + d->figureNames[i], box, at, this);
             connect(figure, SIGNAL(closed()), this, SLOT(closeFigure()));
-            figure->setGeometry(rect());
+            figure->setGeometry(docRect());
             figure->show();
             return true;
         }
         return false;
+    }
+
+    // The figure view's side: marks made on a figure are the page's.
+    Strokes inkWithin(const QRect &area) {
+        Strokes out;
+        foreach (const MarkPtr &m, marks)
+            if (m->doc == doc()->id)
+                foreach (const QPolygon &s, m->ink)
+                    if (s.boundingRect().intersects(area)) out << s;
+        return out;
+    }
+    void figureStroke(const QPolygon &stroke) {
+        if (locked() || stroke.size() < 2) return;
+        addInk(stroke);
+        figure->update();
+    }
+    void figureTap(const QPoint &p) {
+        MarkPtr hit = hitMark(p);
+        if (hit && hit != openMark) openNote(hit);
+    }
+    void figureErase(const QPoint &p) {
+        if (locked()) return;
+        eraseAt(p);
+        figure->update();
     }
 
     MarkPtr hitMark(const QPoint &p) {
@@ -1220,7 +1261,9 @@ private:
             }
             return;
         }
-        QPoint at = toDoc(p);
+        eraseAt(toDoc(p));
+    }
+    void eraseAt(const QPoint &at) {
         for (int m = marks.size() - 1; m >= 0; --m) {
             MarkPtr mark = marks[m];
             if (mark->doc != doc()->id) continue;
@@ -1661,6 +1704,7 @@ private:
 
     Mirror *mirror;
     FigureView *figure;
+    bool penOnFigure;
     QVariantMap resume;
     QTimer stateTimer;
     QString reviewId, title, kind, message, reviewStatus, armed;
