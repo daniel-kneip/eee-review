@@ -204,7 +204,7 @@ signals:
 public slots:
     // Screen coordinates, from the app's PenReader.
     void penDown(const QPoint &screen) {
-        penOnFigure = figure && figure->geometry().contains(mapFromGlobal(screen));
+        penOnFigure = figure && figure->isVisible() && figure->geometry().contains(mapFromGlobal(screen));
         if (penOnFigure) {
             figure->penDown(screen);
             return;
@@ -1226,6 +1226,14 @@ private:
 
     // The figure view's side: marks made on a figure are the page's.
     QString figureTool() { return tool; }
+    // Each mark's number and stamp, with the ink it belongs to, for the zoom view to place.
+    QList<QPair<QRect, QImage> > figureBadges(const QRect &area) {
+        QList<QPair<QRect, QImage> > out;
+        for (int m = 0; m < marks.size(); ++m)
+            if (marks[m]->doc == doc()->id && boundsOf(marks[m]->ink).intersects(area))
+                out << qMakePair(boundsOf(marks[m]->ink), badgeArt(m + 1, marks[m]->stamp));
+        return out;
+    }
     Strokes inkWithin(const QRect &area) {
         Strokes out;
         foreach (const MarkPtr &m, marks)
@@ -1416,14 +1424,17 @@ private:
     QRect drawerRect() const { return QRect(0, 0, qMin(560, width() - 90), height() - TOOLBAR_H); }
 
     void toggleDrawer() { drawerOpen ? closeDrawer() : openDrawer(); }
+    // The zoom view is a widget of its own over the document and would hide the drawer.
     void openDrawer() {
         drawerOpen = true;
         drawerScroll = 0;
         buildDrawer();
+        if (figure) figure->hide();
         update();
     }
     void closeDrawer() {
         drawerOpen = false;
+        if (figure) figure->show();
         update();
     }
     void drawerScrollTo(int y) {

@@ -21,6 +21,7 @@ class FigureHost {
 public:
     virtual ~FigureHost() {}
     virtual QString figureTool() = 0;
+    virtual QList<QPair<QRect, QImage> > figureBadges(const QRect &pageArea) = 0;
     virtual Strokes inkWithin(const QRect &pageArea) = 0;
     virtual void figureStroke(const QPolygon &pageStroke) = 0;
     virtual void figureTap(const QPoint &pagePoint) = 0;
@@ -121,6 +122,13 @@ protected:
             }
             inkPen(p, qMax(INK_WIDTH, qRound(INK_WIDTH * pageScale())));
             drawStrokes(p, ink, clip);
+            // Badges keep their size, beside the ink as on the page.
+            QRect all(toPage(QPoint(0, BAR_H)), toPage(QPoint(width(), height())));
+            typedef QPair<QRect, QImage> Badge;
+            foreach (const Badge &b, host->figureBadges(all.normalized())) {
+                QPoint inkTop = toView(b.first.topLeft());
+                p.drawImage(QPoint(qMax(0, inkTop.x() - 30), inkTop.y() - 30), b.second);
+            }
             if (live.size() > 1 && gesture == "pen") {
                 inkPen(p, qMax(INK_WIDTH, qRound(INK_WIDTH * pageScale())));
                 drawStrokes(p, Strokes() << live, clip);
@@ -211,10 +219,12 @@ private:
         clampOffset();
         update();
     }
+    // The figure moves until its edge reaches the middle of the view, so every part of it can
+    // be brought to the centre.
     void clampOffset() {
         QRect v = viewRect();
-        offset.setX(shown.width() <= v.width() ? (shown.width() - v.width()) / 2 : qBound(0, offset.x(), shown.width() - v.width()));
-        offset.setY(shown.height() <= v.height() ? (shown.height() - v.height()) / 2 : qBound(0, offset.y(), shown.height() - v.height()));
+        offset.setX(qBound(-v.width() / 2, offset.x(), shown.width() - v.width() / 2));
+        offset.setY(qBound(-v.height() / 2, offset.y(), shown.height() - v.height() / 2));
     }
     void panBy(const QPoint &delta) {
         if (shown.isNull()) return;
