@@ -8,6 +8,7 @@
 //   <id>/review.json, <id>/version      the review as the hub last sent it, and its round:docs:status
 //   <id>/marks.json                     the tablet's own marks, as last saved
 //   <id>/<round>/<doc>/index.json, <n>.png   the pages
+//   <id>/fig/<name>.png                 figures at twice their size, for the zoom view
 //   <id>/out/<seq>-<action>.json        posts the hub has not taken yet
 //   <id>/refused/<seq>-<action>.json    posts the hub refused, kept for the user to see
 
@@ -450,6 +451,7 @@ private:
     QString remote(const QString &key) const {
         QStringList parts = key.split('/');
         if (parts.size() == 2) return QString("api/r/%1").arg(parts[0]);
+        if (parts[1] == "fig") return QString("r/%1/fig/%2").arg(parts[0], parts[2]);
         return QString("r/%1/%2/pages/%3/%4").arg(parts[0], parts[1], parts[2], parts[3]);
     }
     void download(const QString &key, const QString &kind) {
@@ -520,6 +522,10 @@ private:
                 if (index.isEmpty()) return base + "index.json";
                 QRegExp count("\"count\":(\\d+)");
                 s.count = count.indexIn(QString::fromUtf8(index.left(200))) >= 0 ? count.cap(1).toInt() : 0;
+                QRegExp figure("\"name\":\"([0-9a-f]+@\\d\\.png)\"");
+                QString text = QString::fromUtf8(index);
+                for (int at = 0; (at = figure.indexIn(text, at)) >= 0; at += figure.matchedLength())
+                    if (!QFile::exists(dir + id + "/fig/" + figure.cap(1))) return id + "/fig/" + figure.cap(1);
                 s.strip = 0;
             }
             for (; s.strip < s.count; ++s.strip)
@@ -528,7 +534,7 @@ private:
         s.done = true;
         fprintf(stderr, "mirror: %s is on the tablet\n", qPrintable(id));
         foreach (const QString &name, QDir(dir + id).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            if (name != QString::number(round) && name != "out") removeTree(dir + id + "/" + name);
+            if (QRegExp("\\d+").exactMatch(name) && name != QString::number(round)) removeTree(dir + id + "/" + name);
         emit changed();
         return QString();
     }

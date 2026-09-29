@@ -14,7 +14,9 @@
 #include <QtGui>
 
 #include "baker.h"
+#include "figure.h"
 #include "mirror.h"
+#include "ui.h"
 
 namespace native {
 
@@ -53,6 +55,9 @@ struct Doc {
     // out black on this panel.
     QList<QByteArray> pngs;
     QList<bool> requested;
+    // The figures on the page, to open in the zoom view.
+    QList<QRect> figureBoxes;
+    QStringList figureNames;
 };
 
 // A document strip, or a slice of a note, with its ink burnt in by the Baker. Until a bake
@@ -79,33 +84,6 @@ struct Undo {
     QPolygon stroke;
     int at, markAt;
 };
-
-inline void paintButton(QPainter &p, const QRect &rect, const QString &label, bool on, int px = 18) {
-    QFont f = p.font();
-    f.setPixelSize(px);
-    f.setBold(false);
-    p.setFont(f);
-    p.fillRect(rect, on ? Qt::black : Qt::white);
-    p.setPen(QPen(Qt::black, 2));
-    p.drawRect(rect.adjusted(1, 1, -1, -1));
-    p.setPen(on ? Qt::white : Qt::black);
-    p.drawText(rect, Qt::AlignCenter, label);
-}
-
-// The Eee Note's buttons arrive as function keys.
-inline QString buttonName(int key) {
-    switch (key) {
-    case Qt::Key_F1: return "back";
-    case Qt::Key_F2: return "g1";
-    case Qt::Key_F3: return "g2";
-    case Qt::Key_F4: return "g3";
-    case Qt::Key_F5: return "g4";
-    case Qt::Key_F6: return "left";
-    case Qt::Key_F9: return "home";
-    case Qt::Key_F12: return "right";
-    default: return QString();
-    }
-}
 
 inline QString jsonString(const QString &s) {
     QString out = "\"";
@@ -191,7 +169,7 @@ class ReviewWidget : public QWidget {
     Q_OBJECT
 public:
     ReviewWidget(Mirror *mirror, const QString &id)
-        : mirror(mirror), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
+        : mirror(mirror), figure(0), reviewId(id), round(0), cur(-1), noteH(0), tool("pen"), pane("doc"), pressed(false), noteExtent(0),
           loggedRss(0), drawerOpen(false), drawerScroll(0), drawerHeight(0), jumpDoc(-1), jumpLine(0) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         setFocusPolicy(Qt::StrongFocus);
@@ -225,6 +203,10 @@ signals:
 public slots:
     // Screen coordinates, from the app's PenReader.
     void penDown(const QPoint &screen) {
+        if (figure) {
+            figure->penDown(screen);
+            return;
+        }
         QPoint p = mapFromGlobal(screen);
         baker->hold(true);
         pressed = true;
@@ -245,6 +227,10 @@ public slots:
         }
     }
     void penMoved(const QPoint &screen) {
+        if (figure) {
+            figure->penMoved(screen);
+            return;
+        }
         if (!pressed) return;
         QPoint p = mapFromGlobal(screen);
         if (p == live.last()) return;
@@ -263,6 +249,10 @@ public slots:
         dirty = QRect();
     }
     void penUp() {
+        if (figure) {
+            figure->penUp();
+            return;
+        }
         if (!pressed) return;
         pressed = false;
         baker->hold(false);
@@ -274,7 +264,7 @@ public slots:
         else if (gesture == "read" && pathLength(live) < TAP_MAX && docRect().contains(live.first())) {
             MarkPtr hit = hitMark(toDoc(live.first()));
             if (hit && hit != openMark) openNote(hit);
-            else if (!hit) status(lockedText());
+            else if (!hit && !openFigureAt(toDoc(live.first()))) status(lockedText());
         }
         else if ((gesture == "doc" || gesture == "note") && tool == "pen") endStroke();
         QRect trail = live.boundingRect().adjusted(-4, -4, 4, 4);
@@ -285,6 +275,7 @@ public slots:
 
     // The tablet's buttons, named as in main.cpp.
     bool button(const QString &name) {
+        if (figure && figure->button(name)) return true;
         if (name == "back") {
             if (drawerOpen) closeDrawer();
             else if (openMark) closeNote();
@@ -408,6 +399,11 @@ private slots:
         }
     }
     void quitApp() { qApp->quit(); }
+    void closeFigure() {
+        figure->deleteLater();
+        figure = 0;
+        update();
+    }
     void writeState() {
         Doc *d = doc();
         if (!d) return;
@@ -540,6 +536,15 @@ private:
             d.rowTop << r[0].toInt();
             d.rowBottom << r[1].toInt();
             d.rowIndex << r[2].toInt();
+        }
+        d.figureBoxes.clear();
+        d.figureNames.clear();
+        foreach (const QVariant &v, page.value("figures").toList()) {
+            QVariantMap f = v.toMap();
+            QVariantList box = f.value("box").toList();
+            if (box.size() < 4) continue;
+            d.figureBoxes << QRect(QPoint(box[2].toInt(), box[0].toInt()), QPoint(box[3].toInt(), box[1].toInt()));
+            d.figureNames << f.value("name").toString();
         }
         d.loaded = true;
         if (index == cur && !resume.isEmpty()) resumeView();
@@ -1128,6 +1133,7 @@ private:
         if (pathLength(stroke) < TAP_MAX) {
             MarkPtr hit = hitMark(stroke[0]);
             if (hit && hit != openMark) openNote(hit);
+            else if (!hit) openFigureAt(stroke[0]);
             return;
         }
         // A stroke well away from the open mark means something else.
@@ -1154,6 +1160,22 @@ private:
         invalidateDoc(markArea(created), created->doc);
         openNote(created);
         scheduleSave();
+    }
+
+    // A tap on a figure opens it in the zoom view, centred where it was tapped.
+    bool openFigureAt(const QPoint &p) {
+        Doc *d = doc();
+        for (int i = 0; d && i < d->figureBoxes.size(); ++i) {
+            QRect box = d->figureBoxes[i];
+            if (!box.contains(p)) continue;
+            QPointF at(double(p.x() - box.left()) / box.width(), double(p.y() - box.top()) / box.height());
+            figure = new FigureView(mirror, reviewId + "/fig/" + d->figureNames[i], at, this);
+            connect(figure, SIGNAL(closed()), this, SLOT(closeFigure()));
+            figure->setGeometry(rect());
+            figure->show();
+            return true;
+        }
+        return false;
     }
 
     MarkPtr hitMark(const QPoint &p) {
@@ -1638,6 +1660,7 @@ private:
     }
 
     Mirror *mirror;
+    FigureView *figure;
     QVariantMap resume;
     QTimer stateTimer;
     QString reviewId, title, kind, message, reviewStatus, armed;

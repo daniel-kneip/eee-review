@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { commentHtml } from '../render/comments.mjs';
 import { changedFiles, fileAt, renderDiff, renderFile } from '../render/diff.mjs';
+import { isDrawio, renderDrawio } from '../render/drawio.mjs';
 import { renderFigures } from '../render/figures.mjs';
 import { strokesBounds, strokesToPng } from '../render/ink.mjs';
 import { renderMarkdown } from '../render/markdown.mjs';
@@ -132,6 +133,11 @@ export class Store extends EventEmitter {
       );
       unchanged = review.files.filter((want) => !changes.some((file) => wanted(file.path)(want)));
       for (const file of changes) {
+        // A diagram's XML says nothing on paper; its new state is shown drawn.
+        if (isDrawio(file.path) && file.content !== null) {
+          docs.push(renderDrawio(file.path, file.content));
+          continue;
+        }
         const changed = new Set(file.hunks.flatMap((h) => h.lines.filter((l) => l.kind === 'add').map((l) => l.new)));
         const lines = file.hunks.flatMap((h) => h.lines);
         docs.push({
@@ -180,6 +186,7 @@ export class Store extends EventEmitter {
 
   renderSource(review, file) {
     const content = fileAt(review.repo, file, review.kind === 'code' ? review.head : null);
+    if (isDrawio(file)) return renderDrawio(file, content);
     const comments = (review.comments ?? []).filter((c) => c.file === file);
     const rendered = /\.(md|markdown)$/i.test(file)
       ? renderMarkdown(content, comments, file)
@@ -194,11 +201,11 @@ export class Store extends EventEmitter {
 
   async startRound(review, round, docs) {
     const withIds = [];
-    for (const doc of docs) {
+    for (const { drawio, ...doc } of docs) {
       withIds.push({
         ...doc,
         id: doc.id ?? newId(),
-        html: await renderFigures(doc.html, this.dir(review.id, 'figures'), `/r/${review.id}/fig`),
+        html: await renderFigures(doc.html, this.dir(review.id, 'figures'), `/r/${review.id}/fig`, { drawio }),
       });
     }
     writeJson(this.roundDir(review.id, round, 'docs.json'), withIds);
@@ -359,8 +366,8 @@ export class Store extends EventEmitter {
     const docs = this.docs(id, review.round);
     for (const file of files) {
       if (docs.some((d) => d.path === file && d.kind !== 'diff')) continue;
-      const doc = this.renderSource(review, file);
-      doc.html = await renderFigures(doc.html, this.dir(id, 'figures'), `/r/${id}/fig`);
+      const { drawio, ...doc } = this.renderSource(review, file);
+      doc.html = await renderFigures(doc.html, this.dir(id, 'figures'), `/r/${id}/fig`, { drawio });
       docs.push({ ...doc, id: newId(), added: true });
     }
     writeJson(this.roundDir(id, review.round, 'docs.json'), docs);

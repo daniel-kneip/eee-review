@@ -29,7 +29,7 @@ export class PageRenderer {
     const page = await this.browser.newPage({ viewport: { width: PAGE_WIDTH, height: 1000 }, deviceScaleFactor: 1 });
     try {
       await page.goto(url, { waitUntil: 'load' });
-      const { height, rows } = await page.evaluate(() => {
+      const { height, rows, figures } = await page.evaluate(() => {
         const layer = document.getElementById('docLayer');
         const base = layer.getBoundingClientRect().top;
         const rows = [];
@@ -37,7 +37,13 @@ export class PageRenderer {
           const box = el.getBoundingClientRect();
           rows.push([Math.round(box.top - base), Math.round(box.bottom - base), Number(el.getAttribute('data-row'))]);
         }
-        return { height: Math.ceil(layer.getBoundingClientRect().height), rows };
+        // Where the figures sit, for the tablet to open them in its zoom view.
+        const figures = [...layer.querySelectorAll('.figure img')].map((img) => {
+          const box = img.getBoundingClientRect();
+          const box4 = [box.top - base, box.bottom - base, box.left, box.right].map(Math.round);
+          return { box: box4, name: img.getAttribute('src').split('/').pop() };
+        });
+        return { height: Math.ceil(layer.getBoundingClientRect().height), rows, figures };
       });
       const partial = `${dir}.partial`;
       fs.rmSync(partial, { recursive: true, force: true });
@@ -48,7 +54,7 @@ export class PageRenderer {
         const shot = decodePngToGray(await page.screenshot({ clip, fullPage: true }));
         fs.writeFileSync(path.join(partial, `${n}.png`), encodeGrayPng(shot.gray, shot.width, shot.height, 4));
       }
-      const index = { width: PAGE_WIDTH, height, strip: STRIP_HEIGHT, count, rows };
+      const index = { width: PAGE_WIDTH, height, strip: STRIP_HEIGHT, count, rows, figures };
       fs.writeFileSync(path.join(partial, 'index.json'), JSON.stringify(index));
       fs.rmSync(dir, { recursive: true, force: true });
       fs.renameSync(partial, dir);

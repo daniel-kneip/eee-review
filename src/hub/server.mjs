@@ -317,7 +317,7 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
         const file = path.join(await pages(m[1], Number(m[2]), Number(m[3])), m[4]);
         if (fs.existsSync(file)) return send(req, res, fs.readFileSync(file), m[4].endsWith('.png') ? 'image/png' : 'application/json');
       }
-      if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/fig\/([0-9a-f]+\.png)$/))) {
+      if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/fig\/([0-9a-f]+(?:@\d)?\.png)$/))) {
         return send(req, res, fs.readFileSync(store.dir(m[1], 'figures', m[2])), 'image/png');
       }
       if (req.method === 'GET' && (m = p.match(/^\/r\/([0-9a-f]{8})\/note\/(\d+)\/([\w-]+)$/))) {
