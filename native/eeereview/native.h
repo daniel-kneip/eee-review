@@ -225,10 +225,15 @@ public slots:
             startNoteScroll = openMark ? openMark->noteScroll : 0;
         }
         if (locked() && (gesture == "doc" || gesture == "note")) gesture = "read";
-        if (gesture == "rail") railTo(p.y());
-        else if (gesture == "noteRail") {
+        // A rail's frame is picked up where the pen lands on it; elsewhere the rail jumps there
+        // first. Either way the pen then moves the frame by as much as it moves.
+        if (gesture == "rail") {
+            if (!grabs(railFrame(), p)) railTo(p.y());
+            startScroll = doc() ? doc()->scroll : 0;
+        } else if (gesture == "noteRail") {
             noteExtent = noteLength();
-            noteRailTo(p.y());
+            if (!grabs(noteRailFrame(), p)) noteRailTo(p.y());
+            startNoteScroll = openMark->noteScroll;
         } else if (gesture == "doc" || gesture == "note") {
             pane = gesture;
             if (tool == "eraser") erase(p);
@@ -244,8 +249,8 @@ public slots:
         if (p == live.last()) return;
         QPoint last = live.last();
         live << p;
-        if (gesture == "rail") railTo(p.y());
-        else if (gesture == "noteRail") noteRailTo(p.y());
+        if (gesture == "rail" && doc()) scrollTo(startScroll + int(double(p.y() - startY) / docH() * doc()->height));
+        else if (gesture == "noteRail") noteScrollTo(startNoteScroll + int(double(p.y() - startY) / noteH * noteExtent));
         else if (gesture == "grip") dragGrip(p.y());
         else if (gesture == "drawer") drawerScrollTo(startDrawerScroll - (p.y() - startY));
         else if (gesture == "dragDoc") scrollTo(startScroll - (p.y() - startY));
@@ -886,8 +891,7 @@ private:
         Doc *d = doc();
         if (!d || !d->height) return;
         double scale = double(r.height()) / qMax(d->height, 1);
-        int frameTop = int(d->scroll * scale);
-        p.fillRect(r.left() + 3, frameTop, RAIL_W - 6, qMax(8, int(docH() * scale)), QColor(0xcc, 0xcc, 0xcc));
+        p.fillRect(railFrame(), QColor(0xcc, 0xcc, 0xcc));
         QFont f = font();
         f.setPixelSize(15);
         f.setBold(true);
@@ -989,10 +993,7 @@ private:
         QRect r = noteRailRect();
         p.fillRect(r, QColor(0xf2, 0xf2, 0xf2));
         p.fillRect(r.left(), r.top(), 2, r.height(), Qt::black);
-        int length = pressed && gesture == "noteRail" ? noteExtent : noteLength();
-        double scale = double(r.height()) / length;
-        p.fillRect(r.left() + 3, r.top() + int(openMark->noteScroll * scale), RAIL_W - 6, qMax(8, int(noteH * scale)),
-                   QColor(0xcc, 0xcc, 0xcc));
+        p.fillRect(noteRailFrame(), QColor(0xcc, 0xcc, 0xcc));
     }
 
     void paintToolBar(QPainter &p) {
@@ -1074,6 +1075,22 @@ private:
         return int(double(y) / docH() * d->height) - docH() / 2;
     }
     void railTo(int y) { scrollTo(railScroll(y)); }
+    // The view's frame on a rail.
+    QRect railFrame() {
+        Doc *d = doc();
+        if (!d || !d->height) return QRect();
+        QRect r = railRect();
+        double scale = double(r.height()) / d->height;
+        return QRect(r.left() + 3, r.top() + int(d->scroll * scale), RAIL_W - 6, qMax(8, int(docH() * scale)));
+    }
+    QRect noteRailFrame() {
+        QRect r = noteRailRect();
+        int length = pressed && gesture == "noteRail" ? noteExtent : noteLength();
+        double scale = double(r.height()) / length;
+        return QRect(r.left() + 3, r.top() + int(openMark->noteScroll * scale), RAIL_W - 6, qMax(8, int(noteH * scale)));
+    }
+    // A thin frame is hard to hit with the pen, so a little around it counts.
+    static bool grabs(const QRect &frame, const QPoint &p) { return frame.adjusted(-RAIL_W, -24, RAIL_W, 24).contains(p); }
     void noteRailTo(int y) {
         int top = noteRailRect().top();
         noteScrollTo(int(double(y - top) / noteH * noteExtent) - noteH / 2);
