@@ -193,11 +193,13 @@ function pendingForAgent(store, pending) {
     } catch {
       // A cut is a help to the agent; the marks go without it.
     }
+    // A diagram's labels all come as its text; the cut shows the ones that were marked.
+    const onFigure = crop && docs[index]?.rows.some((r) => r.kind === 'figure') && (m.rows ?? []).every((r) => docs[index].rows[r]?.kind === 'figure');
     return {
       n,
       id: m.id,
       where,
-      text,
+      text: onFigure ? '' : text,
       stamp: m.stamp ?? null,
       note: note ? note.toString('base64') : null,
       crop: crop ? crop.toString('base64') : null,
