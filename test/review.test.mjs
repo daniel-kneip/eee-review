@@ -198,7 +198,7 @@ test('a pull request comes with its details and comments, shows only what its br
   git('branch', '-M', 'main');
   git('checkout', '-qb', 'feature');
   fs.mkdirSync(path.join(repo, 'icons/sub'), { recursive: true });
-  for (const icon of ['icons/home.svg', 'icons/user.svg', 'icons/sub/gear.svg', 'yarn.lock'])
+  for (const icon of ['icons/1. FC Köln.svg', 'icons/user.svg', 'icons/sub/gear.svg', 'yarn.lock'])
     fs.writeFileSync(path.join(repo, icon), `<svg id="${icon}"/>\n`);
   git('add', 'auth.js', 'icons', 'yarn.lock');
   git('commit', '-qm', 'log issued ids');
@@ -281,13 +281,13 @@ test('a pull request comes with its details and comments, shows only what its br
       repo,
       base: 'main',
       head: 'feature',
-      files: ['icons/home.svg'],
+      files: ['icons/1. FC Köln.svg'],
       exclude: ['icons/', '*.lock'],
     });
     const bulkDocs = store.docs(bulk.id, 1);
     assert.deepEqual(
       bulkDocs.map((d) => `${d.kind} ${d.path ?? d.title}`),
-      ['spec Übersicht', 'diff auth.js', 'file auth.js', 'diff icons/home.svg', 'file icons/home.svg'],
+      ['spec Übersicht', 'diff auth.js', 'file auth.js', 'diff icons/1. FC Köln.svg', 'file icons/1. FC Köln.svg'],
       'a file named despite the exclusion stays in as an example, without narrowing the rest',
     );
     assert.match(bulkDocs[0].html, /Nicht im Review: 3 geänderte Dateien[\s\S]*\(Wurzel\)  1 Datei\nicons\/  1 Datei\nicons\/sub\/  1 Datei/);

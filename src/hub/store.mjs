@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { commentHtml } from '../render/comments.mjs';
-import { changedFiles, fileAt, renderDiff, renderFile } from '../render/diff.mjs';
+import { changedFiles, changedPaths, fileAt, renderDiff, renderFile } from '../render/diff.mjs';
 import { isDrawio, renderDrawio } from '../render/drawio.mjs';
 import { renderFigures } from '../render/figures.mjs';
 import { strokesBounds, strokesToPng } from '../render/ink.mjs';
@@ -164,11 +164,11 @@ export class Store extends EventEmitter {
       const examples = review.files.filter((want) => !isGlob(want) && excluded(want));
       const narrow = review.files.filter((want) => !examples.includes(want));
       const included = (file) => !narrow.length || narrow.some((want) => matches(want, file));
-      const all = changedFiles(review.repo, review.base, review.head);
-      const changes = all.filter((file) => examples.includes(file.path) || (included(file.path) && !excluded(file.path)));
-      omitted = all.filter((file) => included(file.path) && !changes.includes(file)).map((file) => file.path);
+      const all = changedPaths(review.repo, review.base, review.head);
+      const kept = all.filter((file) => examples.includes(file.path) || (included(file.path) && !excluded(file.path)));
+      omitted = all.filter((file) => included(file.path) && !kept.includes(file)).map((file) => file.path);
       unchanged = review.files.filter((want) => !isGlob(want) && !all.some((file) => matches(want, file.path)));
-      for (const file of changes) {
+      for (const file of changedFiles(review.repo, review.base, review.head, kept)) {
         // A diagram's XML says nothing on paper; its new state is shown drawn.
         if (isDrawio(file.path) && file.content !== null) {
           docs.push(...renderDrawio(file.path, file.content));

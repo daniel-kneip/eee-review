@@ -11,23 +11,30 @@ const git = (repo, ...args) => execFileSync('git', args, { cwd: repo, encoding: 
 const WHOLE_FILE_MAX = 1200;
 const WINDOW = 150;
 
-// The files a change touches, with their hunks. base alone compares the working tree with
-// it (uncommitted work when base is HEAD); with head it is what head changed since it left
-// base, as a pull request shows it.
-export function changedFiles(repo, base = 'HEAD', head = null) {
+// The files a change touches. base alone compares the working tree with it (uncommitted work
+// when base is HEAD); with head it is what head changed since it left base, as a pull request
+// shows it. -z keeps paths as they are: git otherwise quotes and escapes non-ASCII names.
+export function changedPaths(repo, base = 'HEAD', head = null) {
   const range = head ? [`${base}...${head}`] : [base];
-  const names = git(repo, 'diff', '--name-status', '-M', ...range)
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [status, ...paths] = line.split('\t');
-      return { status: status[0], path: paths.at(-1), oldPath: paths.length > 1 ? paths[0] : paths[0] };
-    });
+  const fields = git(repo, 'diff', '-z', '--name-status', '-M', ...range).split('\0');
+  const names = [];
+  for (let i = 0; i < fields.length && fields[i]; ) {
+    const status = fields[i++];
+    const oldPath = fields[i++];
+    const renamed = status[0] === 'R' || status[0] === 'C';
+    names.push({ status: status[0], oldPath, path: renamed ? fields[i++] : oldPath });
+  }
   if (!head) {
-    for (const untracked of git(repo, 'ls-files', '--others', '--exclude-standard').split('\n').filter(Boolean)) {
+    for (const untracked of git(repo, 'ls-files', '-z', '--others', '--exclude-standard').split('\0').filter(Boolean)) {
       names.push({ status: 'A', path: untracked, oldPath: untracked, untracked: true });
     }
   }
+  return names;
+}
+
+// The given changed paths with their hunks and content as of head.
+export function changedFiles(repo, base, head, names) {
+  const range = head ? [`${base}...${head}`] : [base];
   return names.map((f) => ({
     ...f,
     hunks: f.untracked
