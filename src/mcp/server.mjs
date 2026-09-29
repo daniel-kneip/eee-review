@@ -45,11 +45,15 @@ export async function startMcp() {
     {
       title: 'Review auf dem Tablet starten',
       description:
-        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein), eine aufgeführte Datei ohne Änderung erscheint ganz. Mit base und head zeigt es, was head seit der Abzweigung von base geändert hat, wie ein Pull Request. overview und comments bringen PR-Details und Kommentare mit (siehe Skill eee-review, Abschnitt Pull requests). Danach dem Nutzer Bescheid geben und auf seine Nachricht warten, dann review_fetch.',
+        'Schickt Dokumente oder eine Code-Änderung zum Review auf das Eee-Note-Tablet des Nutzers. kind "spec": files sind die zu lesenden Dateien (Markdown wird gerendert, Mermaid als Bild). kind "code": die Änderung zwischen base und head (ohne head: Arbeitsverzeichnis gegen base, auch neue Dateien) als Diff und ganze Datei je Datei; files grenzt die Änderung auf diese Pfade ein (Ordner schließen alles darunter ein, Globs wie src/**/*.ts was passt), eine aufgeführte Datei ohne Änderung erscheint ganz. exclude nimmt Pfade, Ordner oder Globs heraus, etwa generierte Dateien oder Assets; einzeln in files genannte Dateien bleiben trotzdem drin, als Beispiele. Die Übersicht zählt, was fehlt. Mit base und head zeigt es, was head seit der Abzweigung von base geändert hat, wie ein Pull Request. overview und comments bringen PR-Details und Kommentare mit (siehe Skill eee-review, Abschnitt Pull requests). Danach dem Nutzer Bescheid geben und auf seine Nachricht warten, dann review_fetch.',
       inputSchema: {
         title: z.string().describe('Kurzer Titel, erscheint in der Eingangsliste'),
         kind: z.enum(['spec', 'code']).default('spec'),
-        files: z.array(z.string()).default([]).describe('Pfade relativ zum Repository'),
+        files: z.array(z.string()).default([]).describe('Pfade, Ordner oder Globs relativ zum Repository'),
+        exclude: z
+          .array(z.string())
+          .default([])
+          .describe('nur code: Pfade, Ordner oder Globs, die nicht ins Review sollen'),
         base: z.string().default('HEAD').describe('nur code: Vergleichsbasis'),
         head: z.string().optional().describe('nur code: Ziel-Commit; weglassen für das Arbeitsverzeichnis'),
         overview,
@@ -102,6 +106,7 @@ export async function startMcp() {
           .array(z.object({ mark: z.number().int(), text: z.string() }))
           .describe('Pro Markierung: deine Lesart der Notiz und deine Antwort'),
         files: z.array(z.string()).optional().describe('ersetzt die Dokumentliste, falls sie sich ändern soll'),
+        exclude: z.array(z.string()).optional().describe('ersetzt die Ausschlüsse, falls angegeben'),
         overview,
         comments: comments.describe('ersetzt die Kommentare, falls angegeben; sonst bleiben sie'),
         drafts: z

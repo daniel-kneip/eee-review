@@ -11,6 +11,34 @@ import { strokesBounds, strokesToPng } from '../render/ink.mjs';
 import { renderMarkdown } from '../render/markdown.mjs';
 import { escapeHtml } from '../render/highlight.mjs';
 
+const isGlob = (pattern) => /[*?]/.test(pattern);
+
+// A path, a folder with everything under it, or a glob: * within a folder, ** across folders.
+function matches(pattern, file) {
+  if (!isGlob(pattern)) return file === pattern || file.startsWith(pattern.replace(/\/?$/, '/'));
+  const source = pattern
+    .split(/(\*\*\/?|\*|\?)/)
+    .map((part) =>
+      part === '**/' ? '(?:.*/)?' : part === '**' ? '.*' : part === '*' ? '[^/]*' : part === '?' ? '[^/]' : part.replace(/[.+^${}()|[\]\\]/g, '\\$&'),
+    )
+    .join('');
+  return new RegExp(`^${source}$`).test(file);
+}
+
+// The changed files exclude left out, counted per folder, so the reader knows they exist.
+function omittedHtml(omitted) {
+  if (!omitted.length) return '';
+  const folders = new Map();
+  for (const file of omitted) {
+    const folder = path.dirname(file);
+    folders.set(folder, (folders.get(folder) ?? 0) + 1);
+  }
+  const lines = [...folders].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = lines.slice(0, 12).map(([folder, n]) => `${folder === '.' ? '(Wurzel)' : `${folder}/`}  ${n} ${n === 1 ? 'Datei' : 'Dateien'}`);
+  if (lines.length > 12) shown.push(`… und ${lines.slice(12).reduce((sum, [, n]) => sum + n, 0)} in ${lines.length - 12} weiteren Ordnern`);
+  return `<h2>Nicht im Review: ${omitted.length} geänderte ${omitted.length === 1 ? 'Datei' : 'Dateien'}</h2><pre class="code">${escapeHtml(shown.join('\n'))}</pre>`;
+}
+
 export const defaultHome = () => process.env.EEE_REVIEW_HOME ?? path.join(os.homedir(), '.eee-review');
 
 const readJson = (file, fallback) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : fallback);
@@ -98,10 +126,12 @@ export class Store extends EventEmitter {
   // kind 'spec': files are documents (markdown rendered, anything else shown whole).
   // kind 'code': the change between base and head (or the working tree) in repo, a diff and
   // a whole-file view per touched file. Files, when given, narrow the change to those paths
-  // (a folder takes everything under it); a listed file that did not change is shown whole.
+  // (a folder takes everything under it, a glob what it matches); a listed file that did not
+  // change is shown whole. Exclude takes paths out the same way, except files named in files;
+  // the overview counts what is left out.
   // overview (markdown) and comments without a file open the review as a document of their
   // own; comments with a file sit at their line (see render/comments.mjs).
-  async create({ title, kind = 'spec', repo, files = [], base = 'HEAD', head = null, overview = null, comments = [] }) {
+  async create({ title, kind = 'spec', repo, files = [], exclude = [], base = 'HEAD', head = null, overview = null, comments = [] }) {
     const review = {
       id: newId(),
       title,
@@ -110,6 +140,7 @@ export class Store extends EventEmitter {
       base,
       head,
       files,
+      exclude,
       overview,
       comments,
       round: 1,
@@ -126,12 +157,17 @@ export class Store extends EventEmitter {
     const comments = review.comments ?? [];
     const on = (file) => comments.filter((c) => c.file === file);
     let unchanged = review.files;
+    let omitted = [];
     if (review.kind === 'code') {
-      const wanted = (file) => (want) => file === want || file.startsWith(want.replace(/\/?$/, '/'));
-      const changes = changedFiles(review.repo, review.base, review.head).filter(
-        (file) => !review.files.length || review.files.some(wanted(file.path)),
-      );
-      unchanged = review.files.filter((want) => !changes.some((file) => wanted(file.path)(want)));
+      const excluded = (file) => (review.exclude ?? []).some((pattern) => matches(pattern, file));
+      // A file named in files that exclude covers is an example kept from it, not a narrowing.
+      const examples = review.files.filter((want) => !isGlob(want) && excluded(want));
+      const narrow = review.files.filter((want) => !examples.includes(want));
+      const included = (file) => !narrow.length || narrow.some((want) => matches(want, file));
+      const all = changedFiles(review.repo, review.base, review.head);
+      const changes = all.filter((file) => examples.includes(file.path) || (included(file.path) && !excluded(file.path)));
+      omitted = all.filter((file) => included(file.path) && !changes.includes(file)).map((file) => file.path);
+      unchanged = review.files.filter((want) => !isGlob(want) && !all.some((file) => matches(want, file.path)));
       for (const file of changes) {
         // A diagram's XML says nothing on paper; its new state is shown drawn.
         if (isDrawio(file.path) && file.content !== null) {
@@ -165,20 +201,21 @@ export class Store extends EventEmitter {
       }
     }
     for (const file of unchanged) docs.push(...this.renderSource(review, file));
-    const overview = this.renderOverview(review, docs);
+    const overview = this.renderOverview(review, docs, omitted);
     return overview ? [overview, ...docs] : docs;
   }
 
   // PR details and comments on no file shown, ahead of everything else.
-  renderOverview(review, docs) {
+  renderOverview(review, docs, omitted) {
     const comments = review.comments ?? [];
     const general = comments.filter((c) => !c.file);
     const elsewhere = comments.filter((c) => c.file && !docs.some((d) => d.path === c.file));
-    if (!review.overview && !general.length && !elsewhere.length) return null;
+    if (!review.overview && !general.length && !elsewhere.length && !omitted.length) return null;
     const { html, rows } = renderMarkdown(review.overview ?? '');
     const section = (heading, list, options) =>
       list.length ? `<h2>${heading}</h2>${list.map((c) => commentHtml(rows, c, c.file, options)).join('')}` : '';
     const more =
+      omittedHtml(omitted) +
       section('Kommentare', general) +
       section('Kommentare zu weiteren Dateien', elsewhere, { away: true, named: true });
     return { kind: 'spec', title: 'Übersicht', path: null, html: html.replace(/<\/div>$/, `${more}</div>`), rows };
@@ -306,15 +343,16 @@ export class Store extends EventEmitter {
 
   // The agent's answers start the next round: its replies become a document of their own at
   // the top, next to your notes, and the sources are rendered again to show what changed.
-  async respond(id, { replies = [], files = null, rerender = true, overview, comments, drafts = [] }) {
+  async respond(id, { replies = [], files = null, exclude, rerender = true, overview, comments, drafts = [] }) {
     const review = this.get(id);
     const round = review.round;
     if (files) review.files = files;
+    if (exclude !== undefined) review.exclude = exclude;
     if (overview !== undefined) review.overview = overview;
     if (comments !== undefined) review.comments = comments;
     const docs = rerender ? await this.buildDocs(review) : this.docs(id, round).filter((d) => d.kind !== 'replies');
     // Rendering takes a while; the tablet may have saved or submitted in the meantime.
-    const latest = { ...this.get(id), files: review.files, overview: review.overview, comments: review.comments };
+    const latest = { ...this.get(id), files: review.files, exclude: review.exclude, overview: review.overview, comments: review.comments };
     if (latest.round !== round) throw new Error(`review ${id} moved on to round ${latest.round} meanwhile`);
     const marks = this.feedback(id, round)?.marks ?? this.draft(id, round).marks;
     const repliesDoc = this.renderReplies(latest, round, marks, replies);

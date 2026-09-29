@@ -192,12 +192,15 @@ test('a code review of the files asked for goes to the tablet as pages and marku
   }
 });
 
-test('a pull request comes with its details and comments, shows only what its branch changed, and marks on a comment name it', async () => {
+test('a pull request comes with its details and comments, shows only what its branch changed, leaves its bulk out but for examples, and marks on a comment name it', async () => {
   const repo = tempRepo();
   const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: repo, encoding: 'utf8' });
   git('branch', '-M', 'main');
   git('checkout', '-qb', 'feature');
-  git('add', 'auth.js');
+  fs.mkdirSync(path.join(repo, 'icons/sub'), { recursive: true });
+  for (const icon of ['icons/home.svg', 'icons/user.svg', 'icons/sub/gear.svg', 'yarn.lock'])
+    fs.writeFileSync(path.join(repo, icon), `<svg id="${icon}"/>\n`);
+  git('add', 'auth.js', 'icons', 'yarn.lock');
   git('commit', '-qm', 'log issued ids');
   git('checkout', '-q', 'main');
   fs.writeFileSync(path.join(repo, 'spec.md'), '# Plan\n\nRotate tokens.\n\nKeep the old ones a day.\n');
@@ -271,6 +274,23 @@ test('a pull request comes with its details and comments, shows only what its br
       ],
       'each draft comes back with what the user stamped or wrote on it',
     );
+
+    const { review: bulk } = await call('POST', '/api/agent/create', {
+      title: 'PR 7, icons aside',
+      kind: 'code',
+      repo,
+      base: 'main',
+      head: 'feature',
+      files: ['icons/home.svg'],
+      exclude: ['icons/', '*.lock'],
+    });
+    const bulkDocs = store.docs(bulk.id, 1);
+    assert.deepEqual(
+      bulkDocs.map((d) => `${d.kind} ${d.path ?? d.title}`),
+      ['spec Übersicht', 'diff auth.js', 'file auth.js', 'diff icons/home.svg', 'file icons/home.svg'],
+      'a file named despite the exclusion stays in as an example, without narrowing the rest',
+    );
+    assert.match(bulkDocs[0].html, /Nicht im Review: 3 geänderte Dateien[\s\S]*\(Wurzel\)  1 Datei\nicons\/  1 Datei\nicons\/sub\/  1 Datei/);
   } finally {
     server.close();
   }

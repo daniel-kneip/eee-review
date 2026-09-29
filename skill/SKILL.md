@@ -43,7 +43,14 @@ your file reading tool before you answer. If `eee-review` is not on the PATH, ru
   `base` (default `HEAD`), new files included. With `base` and `head` it shows what `head`
   changed since it branched off `base`, as a pull request does. When the user names files or
   folders, pass them as `files`: the review then shows only their changes, and a named file
-  without changes is shown whole.
+  without changes is shown whole. `files` and `exclude` take paths, folders and globs
+  (`*` within a folder, `**` across folders).
+- Keep a large change readable. Before creating a code review, look at the list of changed
+  files. Generated code, icon sets, lock files, snapshots and other bulk the user would not
+  read line by line go in `exclude`. Name two or three typical ones in `files` as examples:
+  a file named there stays in although `exclude` covers it, and does not narrow the rest. The
+  overview lists what was left out, per folder. Say in the overview what the bulk is and how
+  it was made, such as "generated from the SVGs by `npm run icons`".
 - Give it a short title. It is what the user sees in the tablet's inbox.
 - Pass `repo` as the project's absolute path unless you know the tool runs inside the project.
   Kiro starts it elsewhere; without `repo` the call then fails and asks for it.
@@ -88,6 +95,7 @@ When the user asks you to bring a pull request (Bitbucket, GitHub, ...) to the t
    - `comments`: every comment, with inline comments at their file and line and replies as
      their thread. Set `ref` to the platform's comment id.
    - Leave out comments that are resolved or outdated unless the user wants them.
+   - Exclude the PR's bulk as described under Starting.
 4. Review round by round as usual.
 5. Post nothing on the PR until the user says so. Then draft the PR comments from the marks and
    pass them as `drafts` to `review_respond`, together with your replies.

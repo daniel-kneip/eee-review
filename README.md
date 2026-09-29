@@ -82,6 +82,10 @@ stehen als Kasten unter ihrer Zeile, samt Thread. Eine Markierung auf einem Komm
 Agenten, welchen Kommentar du meinst. Kommentare in den PR schreibt er erst, wenn du es sagst
 und seine Entwürfe freigegeben hast. Eigene Hinweise im Code kann der Agent genauso mitschicken.
 
+Große Änderungen hält `exclude` lesbar. Generierte Dateien, Icon-Sets oder Lockfiles nimmt es
+als Pfad, Ordner oder Glob (`icons/**/*.svg`) heraus. Einzeln in `files` genannte Dateien
+bleiben als Beispiele trotzdem drin. Die Übersicht zählt je Ordner, was fehlt.
+
 ## Sicherheit
 
 Der Hub erzeugt beim ersten Start einen Token in `~/.eee-review/token`.

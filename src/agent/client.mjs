@@ -54,7 +54,7 @@ const image = (data, name) => ({ type: 'image', data, name });
 const waitForUser = (to, id) =>
   `Sag dem Nutzer, dass es auf dem Tablet liegt, und warte auf seine Nachricht, dass er die Runde abgeschickt hat. Dann hol sie mit ${to.fetch(id)} ab.`;
 
-export async function create(to, { title, kind = 'spec', files = [], base = 'HEAD', head, repo, overview, comments = [] }) {
+export async function create(to, { title, kind = 'spec', files = [], exclude = [], base = 'HEAD', head, repo, overview, comments = [] }) {
   await ensureHub();
   // Some clients start their tools outside the project (Kiro with a user-level config), so an
   // unset repo only falls back to the working directory when that is a git repo.
@@ -66,6 +66,7 @@ export async function create(to, { title, kind = 'spec', files = [], base = 'HEA
     kind,
     repo: root,
     files: files.map(inRepo),
+    exclude,
     base,
     head,
     overview,

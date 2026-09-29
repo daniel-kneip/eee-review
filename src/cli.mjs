@@ -14,11 +14,11 @@ const USAGE = `eee-review hub               start the review hub (tablet pages a
                              and the USB link to the tablet when native/eeelink/eeelink-host is built
 eee-review mcp               MCP server over stdio for a coding agent; starts the hub if needed
 eee-review agent <command>   the same for agents without MCP; starts the hub if needed:
-  create [json]              send a review; json (or stdin): {title, kind, files, base, head, repo,
-                             overview, comments}
+  create [json]              send a review; json (or stdin): {title, kind, files, exclude, base,
+                             head, repo, overview, comments}
   fetch <id>                 what the user sent; notes and page cuts are written as PNG files
-  respond <id> [json]        answer the round; json (or stdin): {replies, files, overview, comments,
-                             drafts}
+  respond <id> [json]        answer the round; json (or stdin): {replies, files, exclude, overview,
+                             comments, drafts}
   context <id> <file...>     add files to the round
   close <id>                 take the review off the tablet
   list                       all reviews
