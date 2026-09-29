@@ -366,3 +366,19 @@ canvas {
   border-style: dashed;
   border-left-style: solid;
 }
+
+/* Markdown shown as source, in a diff or a whole file */
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
+}
+.hljs-code {
+  background: #e6e6e6;
+}
+.md-marker {
+  color: #999;
+  font-weight: normal;
+  font-style: normal;
+}
