@@ -218,6 +218,12 @@ public slots:
         startY = p.y();
         startNoteH = noteH;
         startDrawerScroll = drawerScroll;
+        // The hand moves the page or the note, and a tap with it still opens a mark or figure.
+        if (tool == "hand" && (gesture == "doc" || gesture == "note")) {
+            gesture = gesture == "doc" ? "dragDoc" : "dragNote";
+            startScroll = doc()->scroll;
+            startNoteScroll = openMark ? openMark->noteScroll : 0;
+        }
         if (locked() && (gesture == "doc" || gesture == "note")) gesture = "read";
         if (gesture == "rail") railTo(p.y());
         else if (gesture == "noteRail") {
@@ -242,6 +248,8 @@ public slots:
         else if (gesture == "noteRail") noteRailTo(p.y());
         else if (gesture == "grip") dragGrip(p.y());
         else if (gesture == "drawer") drawerScrollTo(startDrawerScroll - (p.y() - startY));
+        else if (gesture == "dragDoc") scrollTo(startScroll - (p.y() - startY));
+        else if (gesture == "dragNote" && openMark) noteScrollTo(startNoteScroll - (p.y() - startY));
         else if ((gesture == "doc" || gesture == "note") && tool == "eraser") erase(p);
         else if (gesture == "doc" || gesture == "note") dirty |= QRect(last, p).normalized().adjusted(-4, -4, 4, 4);
     }
@@ -268,7 +276,11 @@ public slots:
         else if (gesture == "shade") closeDrawer();
         else if (gesture == "drawer") { if (pathLength(live) < TAP_MAX) drawerTap(live.first()); }
         else if (gesture.startsWith("button:")) { if (buttonAt(p) == gesture) press(gesture.mid(7)); }
-        else if (gesture == "read" && pathLength(live) < TAP_MAX && docRect().contains(live.first())) {
+        else if (gesture == "dragDoc" && pathLength(live) < TAP_MAX) {
+            MarkPtr hit = hitMark(toDoc(live.first()));
+            if (hit && hit != openMark) openNote(hit);
+            else if (!hit) openFigureAt(toDoc(live.first()));
+        } else if (gesture == "read" && pathLength(live) < TAP_MAX && docRect().contains(live.first())) {
             MarkPtr hit = hitMark(toDoc(live.first()));
             if (hit && hit != openMark) openNote(hit);
             else if (!hit && !openFigureAt(toDoc(live.first()))) status(lockedText());
@@ -409,6 +421,7 @@ private slots:
     void closeFigure() {
         figure->deleteLater();
         figure = 0;
+        setTool(toolBeforeFigure);
         update();
     }
     void writeState() {
@@ -522,8 +535,10 @@ private:
         openMark.clear();
         pane = "doc";
         if (!docs[cur].loaded) mirror->get(pageKey(cur, "index.json"));
+        if (figure) closeFigure();
         trimMemory();
         layoutChanged();
+        openLoneFigure();
     }
 
     void loadIndex(int index, const QVariantMap &page) {
@@ -556,6 +571,7 @@ private:
         }
         d.loaded = true;
         if (index == cur && !resume.isEmpty()) resumeView();
+        if (index == cur) openLoneFigure();
         if (index == jumpDoc) {
             jumpDoc = -1;
             jumpTo(jumpLine);
@@ -913,11 +929,11 @@ private:
     QList<Button> toolButtons() const {
         QList<Button> out;
         QRect bar = toolBarRect();
-        const char *names[] = { "files", "pen", "eraser", "undo", "prev", "next" };
-        const char *labels[] = { "Dateien", "Stift", "Radierer", "\xe2\x86\xb6", "\xe2\x97\x80", "\xe2\x96\xb6" };
-        int widths[] = { 96, 76, 104, 50, 50, 50 };
+        const char *names[] = { "files", "pen", "eraser", "hand", "undo", "prev", "next" };
+        const char *labels[] = { "Dateien", "Stift", "Radierer", "Hand", "\xe2\x86\xb6", "\xe2\x97\x80", "\xe2\x96\xb6" };
+        int widths[] = { 96, 70, 100, 70, 50, 50, 50 };
         int x = 6;
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 7; ++i) {
             Button b;
             b.name = names[i];
             b.label = QString::fromUtf8(labels[i]);
@@ -1105,7 +1121,7 @@ private:
             return;
         }
         if (name == "files") toggleDrawer();
-        else if (name == "pen" || name == "eraser") setTool(name);
+        else if (name == "pen" || name == "eraser" || name == "hand") setTool(name);
         else if (name == "undo") undo();
         else if (name == "prev") step(-1);
         else if (name == "next") step(1);
@@ -1185,17 +1201,31 @@ private:
         for (int i = 0; d && i < d->figureBoxes.size(); ++i) {
             QRect box = d->figureBoxes[i];
             if (!box.contains(p)) continue;
-            QPointF at(double(p.x() - box.left()) / box.width(), double(p.y() - box.top()) / box.height());
-            figure = new FigureView(mirror, this, reviewId + "/fig/" + d->figureNames[i], box, at, this);
-            connect(figure, SIGNAL(closed()), this, SLOT(closeFigure()));
-            figure->setGeometry(docRect());
-            figure->show();
+            openFigure(i, QPointF(double(p.x() - box.left()) / box.width(), double(p.y() - box.top()) / box.height()), false);
             return true;
         }
         return false;
     }
+    // The zoom view comes with the hand, to look around first; the tool before comes back after.
+    void openFigure(int i, const QPointF &at, bool fit) {
+        Doc *d = doc();
+        if (figure || !d || i >= d->figureBoxes.size()) return;
+        figure = new FigureView(mirror, this, reviewId + "/fig/" + d->figureNames[i], d->figureBoxes[i], at, fit, this);
+        connect(figure, SIGNAL(closed()), this, SLOT(closeFigure()));
+        figure->setGeometry(docRect());
+        figure->show();
+        toolBeforeFigure = tool;
+        setTool("hand");
+    }
+    // A document that is a single diagram opens in the zoom view straight away.
+    void openLoneFigure() {
+        Doc *d = doc();
+        if (d && d->loaded && d->figureBoxes.size() == 1 && QRegExp(".*\\.(drawio|dio)", Qt::CaseInsensitive).exactMatch(d->path))
+            openFigure(0, QPointF(0.5, 0.5), true);
+    }
 
     // The figure view's side: marks made on a figure are the page's.
+    QString figureTool() { return tool; }
     Strokes inkWithin(const QRect &area) {
         Strokes out;
         foreach (const MarkPtr &m, marks)
@@ -1705,6 +1735,7 @@ private:
     Mirror *mirror;
     FigureView *figure;
     bool penOnFigure;
+    QString toolBeforeFigure;
     QVariantMap resume;
     QTimer stateTimer;
     QString reviewId, title, kind, message, reviewStatus, armed;
@@ -1719,7 +1750,7 @@ private:
     QPolygon live;
     QRect dirty;
     bool pressed;
-    int startY, startNoteH, noteExtent;
+    int startY, startNoteH, noteExtent, startScroll, startNoteScroll;
     QTimer saveTimer;
     Baker *baker;
     QMap<QString, Tile> tiles;

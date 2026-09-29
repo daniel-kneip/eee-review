@@ -1,8 +1,8 @@
 // A figure of a review page, a diagram above all, shown large enough to read: the hub renders
 // figures at twice their size on the page, and this view shows them at up to that size. It
-// covers the document's pane, so the note pane stays below it. The pen pans or, as pen or
-// eraser, marks the figure; the marks are the page's, mapped onto it. The toolbar and the left
-// and right buttons zoom; back closes it.
+// covers the document's pane, so the note pane stays below it. The review's tool applies: the
+// hand pans, pen and eraser mark the figure, and the marks are the page's, mapped onto it. Its
+// own bar and the left and right buttons zoom; back closes it.
 
 #ifndef EEE_FIGURE_H
 #define EEE_FIGURE_H
@@ -19,6 +19,7 @@ namespace native {
 class FigureHost {
 public:
     virtual ~FigureHost() {}
+    virtual QString figureTool() = 0;
     virtual Strokes inkWithin(const QRect &pageArea) = 0;
     virtual void figureStroke(const QPolygon &pageStroke) = 0;
     virtual void figureTap(const QPoint &pagePoint) = 0;
@@ -29,8 +30,9 @@ class FigureView : public QWidget {
     Q_OBJECT
 public:
     // box: where the figure sits on its page. at: where it was tapped, from 0 to 1 across it.
-    FigureView(Mirror *mirror, FigureHost *host, const QString &key, const QRect &box, const QPointF &at, QWidget *parent)
-        : QWidget(parent), mirror(mirror), host(host), key(key), box(box), at(at), mode("pan"), level(-1), pressed(false) {
+    // fit: show all of it first, rather than its detail at the page's size.
+    FigureView(Mirror *mirror, FigureHost *host, const QString &key, const QRect &box, const QPointF &at, bool fit, QWidget *parent)
+        : QWidget(parent), mirror(mirror), host(host), key(key), box(box), at(at), fit(fit), level(-1), pressed(false) {
         setAttribute(Qt::WA_OpaquePaintEvent);
         connect(mirror, SIGNAL(got(QString, QByteArray, bool)), this, SLOT(got(QString, QByteArray, bool)));
         mirror->get(key);
@@ -41,7 +43,8 @@ public:
         pressed = true;
         live.clear();
         live << p;
-        gesture = toolBar().contains(p) ? "bar" : level < 0 ? "none" : mode;
+        QString tool = host->figureTool();
+        gesture = toolBar().contains(p) ? "bar" : level < 0 ? "none" : tool == "hand" ? "pan" : tool;
         if (gesture == "eraser") host->figureErase(toPage(p));
     }
     void penMoved(const QPoint &screen) {
@@ -68,9 +71,6 @@ public:
             else if (zoomOutRect().contains(first)) zoom(-1);
             else if (zoomInRect().contains(first)) zoom(1);
             else if (fitRect().contains(first)) setLevel(0, center());
-            else if (panRect().contains(first)) setMode("pan");
-            else if (penRect().contains(first)) setMode("pen");
-            else if (eraserRect().contains(first)) setMode("eraser");
         } else if (gesture == "pen") {
             if (live.boundingRect().width() < TAP && live.boundingRect().height() < TAP) host->figureTap(toPage(first));
             else {
@@ -91,8 +91,6 @@ public:
         if (name == "back") emit closed();
         else if (name == "left") zoom(-1);
         else if (name == "right") zoom(1);
-        else if (name == "g1") setMode(mode == "pen" ? "pan" : "pen");
-        else if (name == "g2") setMode(mode == "eraser" ? "pan" : "eraser");
         else return false;
         return true;
     }
@@ -135,9 +133,13 @@ protected:
         paintButton(p, zoomOutRect(), QString::fromUtf8("\xe2\x88\x92"), false, 24);
         paintButton(p, zoomInRect(), "+", false, 24);
         paintButton(p, fitRect(), "Ganz", false, 18);
-        paintButton(p, panRect(), "Schieben", mode == "pan", 18);
-        paintButton(p, penRect(), "Stift", mode == "pen", 18);
-        paintButton(p, eraserRect(), "Radierer", mode == "eraser", 18);
+        QFont f = font();
+        f.setPixelSize(17);
+        p.setFont(f);
+        p.setPen(Qt::black);
+        if (level >= 0)
+            p.drawText(QRect(fitRect().right() + 16, 0, 200, BAR_H), Qt::AlignVCenter | Qt::AlignLeft,
+                       QString("Zoom %1 %").arg(qRound(scales[level] * source.width() / qMax(1, box.width()) * 100)));
     }
     void resizeEvent(QResizeEvent *) {
         if (level < 0) return;
@@ -160,7 +162,7 @@ private slots:
         double steps[] = { 0.5, 0.75, 1.0 };
         for (int i = 0; i < 3; ++i)
             if (steps[i] > scales.last() + 0.05) scales << steps[i];
-        setLevel(scales.size() > 1 ? scales.size() - 2 : 0, QPointF(at.x() * source.width(), at.y() * source.height()));
+        setLevel(fit || scales.size() < 2 ? 0 : scales.size() - 2, QPointF(at.x() * source.width(), at.y() * source.height()));
     }
 
 private:
@@ -172,9 +174,6 @@ private:
     QRect zoomOutRect() const { return barButton(106, 48); }
     QRect zoomInRect() const { return barButton(160, 48); }
     QRect fitRect() const { return barButton(214, 70); }
-    QRect panRect() const { return barButton(300, 104); }
-    QRect penRect() const { return barButton(410, 76); }
-    QRect eraserRect() const { return barButton(492, 104); }
 
     // Figure image pixels per page pixel, times the zoom: how much larger the page looks here.
     double pageScale() const { return level < 0 ? 1 : scales[level] * source.width() / qMax(1, box.width()); }
@@ -187,10 +186,6 @@ private:
         return QPoint(qRound((page.x() - box.left()) * s) - offset.x(), qRound((page.y() - box.top()) * s) - offset.y() + BAR_H);
     }
 
-    void setMode(const QString &m) {
-        mode = m;
-        update(toolBar());
-    }
     // The point of the source image at the middle of the view.
     QPointF center() const {
         if (level < 0) return QPointF();
@@ -236,7 +231,7 @@ private:
     QString key, message, gesture;
     QRect box, dirty;
     QPointF at;
-    QString mode;
+    bool fit;
     QImage source;
     QPixmap shown;
     QList<double> scales;
