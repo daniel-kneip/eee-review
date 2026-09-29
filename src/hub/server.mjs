@@ -386,6 +386,10 @@ export function startHub({ port = DEFAULT_PORT, home, log = console.log } = {}) 
     }
   });
 
+  // Qt 4.6 on the tablet posts on a kept-alive connection without checking it is still open,
+  // and Node closes idle ones after five seconds: drafts then failed now and again.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
   server.on('close', () => renderer.close());
   server.on('clientError', (err, socket) => {
     log('rejected request', err.code, JSON.stringify(err.rawPacket?.toString('latin1') ?? ''));

@@ -4,6 +4,7 @@
 //
 // Under the cache directory:
 //   inbox.json                          the inbox as the hub last sent it
+//   state.json                          the open review and where its view stood
 //   <id>/review.json, <id>/version      the review as the hub last sent it, and its round:docs:status
 //   <id>/marks.json                     the tablet's own marks, as last saved
 //   <id>/<round>/<doc>/index.json, <n>.png   the pages
@@ -14,38 +15,141 @@
 #define EEE_MIRROR_H
 
 #include <QtCore>
+#include <QtGui/QPolygon>
 #include <QtNetwork>
-#include <QtScript>
 
+#include <cctype>
+#include <cstdlib>
+#include <cstdio>
 #include <unistd.h>
 
 namespace native {
 
-// Qt 4.6's QScriptValue::toVariant leaves objects as script objects, so values are walked here.
-inline QVariant fromScript(const QScriptValue &value) {
-    if (value.isArray()) {
-        QVariantList list;
-        int length = value.property("length").toInt32();
-        for (int i = 0; i < length; ++i) list << fromScript(value.property(i));
-        return list;
-    }
-    if (value.isObject()) {
-        QVariantMap map;
-        QScriptValueIterator it(value);
-        while (it.hasNext()) {
-            it.next();
-            map.insert(it.name(), fromScript(it.value()));
+// A small JSON parser. QtScript took ten seconds over the half megabyte of ink a review with
+// long notes has, and froze the app all that time. A stroke, an array of [x, y] points,
+// comes out as a QPolygon: a QVariant for each coordinate was most of the time left. Only
+// pairs count, so the [top, bottom, row] triples of a page index stay lists.
+class JsonReader {
+public:
+    JsonReader(const QByteArray &data) : p(data.constData()), end(data.constData() + data.size()) {}
+    QVariant value() {
+        space();
+        if (p >= end) return QVariant();
+        switch (*p) {
+        case '{': return object();
+        case '[': return array();
+        case '"': return string();
+        case 't': p += 4; return true;
+        case 'f': p += 5; return false;
+        case 'n': p += 4; return QVariant();
+        default: return number();
         }
+    }
+
+private:
+    void space() {
+        while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) ++p;
+    }
+    QVariant object() {
+        QVariantMap map;
+        ++p;
+        for (;;) {
+            space();
+            if (p >= end || *p == '}') break;
+            if (*p == ',') { ++p; continue; }
+            QString key = string().toString();
+            space();
+            if (p < end && *p == ':') ++p;
+            map.insert(key, value());
+        }
+        ++p;
         return map;
     }
-    if (value.isNull() || value.isUndefined()) return QVariant();
-    return value.toVariant();
-}
+    QVariant array() {
+        const char *at = p;
+        QPolygon stroke;
+        if (points(stroke)) return QVariant::fromValue(stroke);
+        p = at;
+        QVariantList list;
+        ++p;
+        for (;;) {
+            space();
+            if (p >= end || *p == ']') break;
+            if (*p == ',') { ++p; continue; }
+            list << value();
+        }
+        ++p;
+        return list;
+    }
+    // [[x, y], ...] with numbers only, or false with p anywhere.
+    bool points(QPolygon &out) {
+        ++p;
+        space();
+        if (p >= end || *p != '[') return false;
+        for (;;) {
+            space();
+            if (p >= end) return false;
+            if (*p == ']') { ++p; return !out.isEmpty(); }
+            if (*p == ',') { ++p; continue; }
+            if (*p != '[') return false;
+            ++p;
+            double xy[2];
+            int n = 0;
+            for (;;) {
+                space();
+                if (p >= end) return false;
+                if (*p == ']') { ++p; break; }
+                if (*p == ',') { ++p; continue; }
+                char *stop;
+                double v = strtod(p, &stop);
+                if (stop == p) return false;
+                p = stop;
+                if (n < 2) xy[n] = v;
+                ++n;
+            }
+            if (n != 2) return false;
+            out << QPoint(qRound(xy[0]), qRound(xy[1]));
+        }
+    }
+    QVariant string() {
+        QByteArray out;
+        ++p;
+        while (p < end && *p != '"') {
+            if (*p != '\\') { out += *p++; continue; }
+            if (++p >= end) break;
+            char c = *p++;
+            if (c == 'u' && end - p >= 4) {
+                ushort code = QByteArray(p, 4).toUShort(0, 16);
+                p += 4;
+                out += QString(QChar(code)).toUtf8();
+            } else out += c == 'n' ? '\n' : c == 't' ? '\t' : c == 'r' ? '\r' : c == 'b' ? '\b' : c == 'f' ? '\f' : c;
+        }
+        ++p;
+        return QString::fromUtf8(out);
+    }
+    QVariant number() {
+        const char *start = p;
+        bool fraction = false;
+        while (p < end && (isdigit(*p) || *p == '-' || *p == '+' || *p == '.' || *p == 'e' || *p == 'E')) {
+            if (*p == '.' || *p == 'e' || *p == 'E') fraction = true;
+            ++p;
+        }
+        if (p == start) {
+            ++p;
+            return QVariant();
+        }
+        QByteArray text(start, p - start);
+        if (!fraction) {
+            bool ok;
+            int n = text.toInt(&ok);
+            if (ok) return n;
+        }
+        return text.toDouble();
+    }
+    const char *p, *end;
+};
 
-inline QVariant parseJson(const QByteArray &data) {
-    QScriptEngine engine;
-    return fromScript(engine.evaluate("(" + QString::fromUtf8(data) + ")"));
-}
+inline QVariant parseJson(const QByteArray &data) { return JsonReader(data).value(); }
 
 inline QByteArray readFile(const QString &path) {
     QFile f(path);
@@ -60,8 +164,9 @@ inline bool writeFile(const QString &path, const QByteArray &data) {
     f.flush();
     fsync(f.handle());
     f.close();
-    QFile::remove(path);
-    return QFile::rename(path + ".tmp", path);
+    // rename replaces the old file in one step; QFile::rename would need it removed first,
+    // and an app ended in between would find no file at all.
+    return ::rename(QFile::encodeName(path + ".tmp").constData(), QFile::encodeName(path).constData()) == 0;
 }
 
 inline void removeTree(const QString &path) {
@@ -105,6 +210,8 @@ public:
     bool viaCable() const { return online() && hub == urls.value(0); }
     bool hasInbox() const { return QFile::exists(dir + "inbox.json"); }
     QVariantList inbox() const { return items; }
+    // Where the app was when it was ended from outside, to open there again.
+    QString statePath() const { return dir + "state.json"; }
 
     // Everything of the review is on the tablet.
     bool ready(const QString &id) const { return syncs.value(id).done; }

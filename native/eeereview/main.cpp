@@ -40,6 +40,11 @@ public:
         }
         connect(qApp, SIGNAL(aboutToQuit()), this, SLOT(hidden()));
     }
+signals:
+    // The launcher ends apps before the tablet sleeps.
+    void shutdown();
+
+public:
     void showed() {
         QCopChannel::send("launcher", "App/showed", streamed(APP_NAME));
         QCopChannel::send("statusbar", "title changed", streamed("eee-review"));
@@ -52,8 +57,8 @@ private slots:
         QCopChannel::flush();
     }
     void received(const QString &message, const QByteArray &data) {
-        fprintf(stderr, "qcop %s (%d bytes)\n", qPrintable(message), data.size());
-        if (message == "app/shutdown") qApp->quit();
+        fprintf(stderr, "qcop %s (%d bytes: %s)\n", qPrintable(message), data.size(), data.toHex().constData());
+        if (message == "app/shutdown") emit shutdown();
     }
 };
 
@@ -68,7 +73,8 @@ class Shell : public QObject {
     Q_OBJECT
 public:
     Shell(const QStringList &urls, const QRect &geometry)
-        : mirror(urls, "/eTablet/eee-review/cache", hubToken()), inbox(&mirror), review(0), area(geometry) {
+        : mirror(urls, "/eTablet/eee-review/cache", hubToken()), inbox(&mirror), review(0), area(geometry),
+          endedFromOutside(false) {
         inbox.setWindowFlags(Qt::FramelessWindowHint);
         inbox.setGeometry(area);
         connect(&inbox, SIGNAL(open(QString)), this, SLOT(openReview(QString)));
@@ -80,14 +86,31 @@ public:
         inbox.show();
         inbox.setFocus();
         mirror.start();
+        connect(qApp, SIGNAL(aboutToQuit()), this, SLOT(quitting()));
+        // Ended from outside last time, by sleep or a crash: open where it was.
+        QVariantMap state = native::parseJson(native::readFile(mirror.statePath())).toMap();
+        QString id = state.value("review").toString();
+        if (!id.isEmpty() && QFile::exists(QFileInfo(mirror.statePath()).path() + "/" + id + "/review.json")) {
+            fprintf(stderr, "resume review %s\n", qPrintable(id));
+            openReview(id, state);
+        }
+    }
+    ~Shell() { delete review; }
+
+public slots:
+    void shutdown() {
+        endedFromOutside = true;
+        if (review) review->flush();
+        qApp->quit();
     }
     void drain() { mirror.drain(3000); }
 
 private slots:
-    void openReview(const QString &id) {
+    void openReview(const QString &id, const QVariantMap &state = QVariantMap()) {
         if (review) return;
         fprintf(stderr, "open review %s\n", qPrintable(id));
         review = new native::ReviewWidget(&mirror, id);
+        review->resumeFrom(state);
         review->setWindowFlags(Qt::FramelessWindowHint);
         review->setGeometry(area);
         connect(review, SIGNAL(closed()), this, SLOT(closeReview()));
@@ -95,7 +118,12 @@ private slots:
         review->setFocus();
         inbox.hide();
     }
+    // Left by the user: next time the app starts in the inbox.
+    void quitting() {
+        if (!endedFromOutside) QFile::remove(mirror.statePath());
+    }
     void closeReview() {
+        QFile::remove(mirror.statePath());
         review->deleteLater();
         review = 0;
         inbox.show();
@@ -126,6 +154,7 @@ private:
     native::InboxWidget inbox;
     native::ReviewWidget *review;
     QRect area;
+    bool endedFromOutside;
 };
 
 // Started from the menu, the app gets no arguments and no log: it brings up the USB link
@@ -154,6 +183,7 @@ int main(int argc, char **argv) {
     int top = QApplication::desktop()->availableGeometry().y();
     Shell shell(urls, QRect(screen.x(), screen.y() + top, screen.width(), screen.height() - top));
     LauncherLink launcher(&app);
+    QObject::connect(&launcher, SIGNAL(shutdown()), &shell, SLOT(shutdown()));
     launcher.showed();
     int code = app.exec();
     shell.drain();

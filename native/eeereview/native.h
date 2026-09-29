@@ -23,7 +23,7 @@ static const int NOTE_TILE = 256;
 // Decoded strips and baked tiles are kept this many strips around the view. Kept for every
 // strip visited they filled 70 MB of the tablet's 256 in a review of 14 files.
 static const int KEEP_STRIPS = 2;
-static const int TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800, NEAR = 120, CONFIRM_MS = 5000;
+static const int TAP_MAX = 12, ERASE_RADIUS = 14, SAVE_DELAY = 800, NEAR = 120, CONFIRM_MS = 5000, STATE_DELAY = 1500;
 
 struct Mark {
     Mark() : noteScroll(0), asked(false), rowsKnown(false) {}
@@ -151,7 +151,8 @@ inline Strokes strokesFrom(const QVariant &value) {
     Strokes out;
     foreach (const QVariant &s, value.toList()) {
         QPolygon poly;
-        foreach (const QVariant &p, s.toList()) {
+        if (s.type() == QVariant::Polygon) poly = qvariant_cast<QPolygon>(s);
+        else foreach (const QVariant &p, s.toList()) {
             QVariantList xy = p.toList();
             if (xy.size() >= 2) poly << QPoint(qRound(xy[0].toDouble()), qRound(xy[1].toDouble()));
         }
@@ -198,6 +199,8 @@ public:
         connect(mirror, SIGNAL(sent(QString, QString)), this, SLOT(sent(QString, QString)));
         saveTimer.setSingleShot(true);
         connect(&saveTimer, SIGNAL(timeout()), this, SLOT(save()));
+        stateTimer.setSingleShot(true);
+        connect(&stateTimer, SIGNAL(timeout()), this, SLOT(writeState()));
         connect(&pulse, SIGNAL(timeout()), this, SLOT(beat()));
         pulse.start(50);
         sinceBeat.start();
@@ -206,6 +209,14 @@ public:
         baker->start();
         mirror->get(reviewId + "/review.json");
         message = QString::fromUtf8("Lade \xe2\x80\xa6");
+    }
+
+    // Where to open, from state.json after the app was ended from outside.
+    void resumeFrom(const QVariantMap &state) { resume = state; }
+    // Saves what is pending, and where the view stands, for an end the app does not choose.
+    void flush() {
+        saveNow();
+        writeState();
     }
 
 signals:
@@ -397,6 +408,19 @@ private slots:
         }
     }
     void quitApp() { qApp->quit(); }
+    void writeState() {
+        Doc *d = doc();
+        if (!d) return;
+        QByteArray json = "{\"review\":" + jsonString(reviewId).toUtf8() + ",\"doc\":";
+        appendInt(json, cur);
+        json += ",\"scroll\":";
+        appendInt(json, d->scroll);
+        json += ",\"mark\":" + jsonString(openMark ? openMark->id : QString()).toUtf8() + ",\"noteScroll\":";
+        appendInt(json, openMark ? openMark->noteScroll : 0);
+        json += ",\"noteH\":";
+        appendInt(json, noteH);
+        writeFile(mirror->statePath(), json + "}");
+    }
     void closeView() { emit closed(); }
 
 private:
@@ -413,6 +437,7 @@ private:
     QRect toolBarRect() const { return QRect(0, height() - TOOLBAR_H, width(), TOOLBAR_H); }
 
     void layoutChanged() {
+        if (doc()) stateTimer.start(STATE_DELAY);
         if (!noteH) noteH = qRound(body() * 0.42);
         noteH = qBound(MIN_PANE, noteH, body() - NOTEBAR_H - MIN_PANE);
         clampScroll();
@@ -460,7 +485,23 @@ private:
         }
         message.clear();
         fprintf(stderr, "native: %s, %d docs, %d marks\n", qPrintable(title), docs.size(), marks.size());
-        showDoc(firstDocument());
+        int doc = resume.isEmpty() ? -1 : resume.value("doc").toInt();
+        showDoc(doc >= 0 && doc < docs.size() ? doc : firstDocument());
+        if (doc != cur) resume.clear();
+    }
+
+    // Back where the app was when the tablet went to sleep: the scroll, and the open note.
+    void resumeView() {
+        docs[cur].scroll = resume.value("scroll").toInt();
+        QString markId = resume.value("mark").toString();
+        foreach (const MarkPtr &m, marks)
+            if (m->id == markId && m->doc == docs[cur].id) {
+                openMark = m;
+                noteH = resume.value("noteH").toInt();
+                m->noteScroll = resume.value("noteScroll").toInt();
+            }
+        resume.clear();
+        fprintf(stderr, "native: resumed at %d\n", docs[cur].scroll);
     }
 
     // A code review opens on the first changed file as the drawer's tree lists it, unless the
@@ -501,6 +542,7 @@ private:
             d.rowIndex << r[2].toInt();
         }
         d.loaded = true;
+        if (index == cur && !resume.isEmpty()) resumeView();
         if (index == jumpDoc) {
             jumpDoc = -1;
             jumpTo(jumpLine);
@@ -670,6 +712,7 @@ private:
     }
     void scrolled() {
         lastScroll.start();
+        stateTimer.start(STATE_DELAY);
         trimMemory();
         // Only near the view: every tile further away was just let go of.
         for (QMap<QString, Tile>::iterator it = tiles.begin(); it != tiles.end(); ++it) {
@@ -1595,6 +1638,8 @@ private:
     }
 
     Mirror *mirror;
+    QVariantMap resume;
+    QTimer stateTimer;
     QString reviewId, title, kind, message, reviewStatus, armed;
     QTime armedAt;
     int round;
