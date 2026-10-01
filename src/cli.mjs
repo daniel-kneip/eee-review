@@ -65,11 +65,12 @@ function startUsbLink(log) {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(0));
 }
 
-// The tablet runs FreeeNote's telnetd. Over the cable it is reached
-// through eeelink and fetches from the hub through eeelink's tablet end at 127.0.0.1:8770;
-// over Wi-Fi it is reached directly and fetches from this machine's address on its subnet.
+// The tablet runs FreeeNote's telnetd. Over the cable it is reached through eeelink and
+// fetches from the hub through eeelink's tablet end at 127.0.0.1:8770; over Wi-Fi it is
+// reached directly and fetches from this machine's address on its subnet.
 async function deploy(host) {
   const usb = await reachable('127.0.0.1', USB_TELNET);
+  if (!usb && !host) throw new Error('no USB link to the tablet: pass its Wi-Fi address as host or set EEE_TABLET');
   const lan = lanUrls(DEFAULT_PORT).find((u) => sameSubnet(u, host)) ?? lanUrls(DEFAULT_PORT)[0];
   const hubUrl = usb ? `http://127.0.0.1:${DEFAULT_PORT}/` : lan;
   const token = hubToken();
